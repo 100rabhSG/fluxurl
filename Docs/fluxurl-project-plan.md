@@ -23,6 +23,35 @@ CI/CD:     GitHub Actions
 
 ---
 
+## Design Docs (running across all phases)
+
+The goal of this project is interview-grade design thinking, not just working code. Three artifacts capture that, alongside the existing `NOTES.md` concepts log:
+
+- **`Docs/HLD.md`** — high-level design. Black-box view: system context, components, data flow, deployment topology, scaling story, failure modes. First sketched before Phase 1 (see Phase 0.5), then refined phase by phase as reality forces revisions.
+- **`Docs/LLD.md`** — low-level design. White-box view: module boundaries inside `app/`, function-level contracts, DB session/transaction lifecycle, error taxonomy, concurrency model. Written *as you build*, not upfront — LLD before code is fiction.
+- **`Docs/decisions/`** — one Architecture Decision Record (ADR) per non-obvious decision. Each ADR is short and follows: **Context → Options considered → Decision → Consequences**. The point of an ADR is to force you to name the alternatives you rejected and why.
+
+**ADR template** lives at `Docs/decisions/0000-template.md`. Numbered sequentially: `0001-short-code-generation.md`, `0002-async-sqlalchemy.md`, etc.
+
+**Rule:** every phase checkpoint requires writing any ADRs triggered by that phase's decisions, and updating `HLD.md` and `LLD.md` if the architecture or internals changed. No phase is "done" until its design docs are written.
+
+**Doc map:**
+
+| Doc | Purpose | Audience |
+|---|---|---|
+| `NOTES.md` | Concept recall in your own words ("what is async SQLAlchemy?") | You, later |
+| `HLD.md` | What the system looks like from outside (boxes, arrows, boundaries) | Anyone reviewing your architecture |
+| `LLD.md` | How the inside is wired (modules, contracts, sessions, errors) | A reviewer reading your code |
+| `Docs/decisions/*.md` | Why you chose X over Y at a point in time | An interviewer asking "why didn't you do Z?" |
+
+**HLD vs LLD vs ADR — quick rule:**
+
+- If it has rejected alternatives → ADR
+- If it describes the system from outside → HLD
+- If it describes how the code is organised inside → LLD
+
+---
+
 ## Phase 0 — Setup (½ day)
 
 Get accounts and tools ready before you write code.
@@ -33,8 +62,37 @@ Get accounts and tools ready before you write code.
 - [ ] GitHub repo created, README skeleton, `.gitignore` for Python
 - [ ] Concepts log started (a single `NOTES.md` or Notion page — whatever you'll actually use)
 - [ ] Python 3.12 installed locally; Docker Desktop installed and running
+- [ ] `Docs/HLD.md` skeleton created (just headings — filled in during Phase 0.5)
+- [ ] `Docs/LLD.md` skeleton created (just headings — filled in starting Phase 1)
+- [ ] `Docs/decisions/0000-template.md` ADR template in place
 
 **Concepts log entry:** What's the difference between AWS root user and IAM user? Why never use root for daily work?
+
+**Design docs:** No ADRs yet — nothing architectural decided. HLD and LLD are skeletons.
+
+---
+
+## Phase 0.5 — v1 HLD sketch (½ day)
+
+Before writing a line of app code, design v1 as if it were an interview question. The point is to lock in the *shape* of the system and force the obvious decisions out into the open. This is intentionally short — you don't yet know enough to over-design, and that's a feature.
+
+**Build:**
+
+- [ ] Fill in `Docs/HLD.md` sections 1–4 (system context, components, data model, request flows) at a black-box level
+- [ ] Fill in section 8 (out of scope for v1) — explicitly
+- [ ] List open questions in section 9 — anything you genuinely don't know yet
+- [ ] Write 1–2 ADRs for decisions you've already implicitly made:
+  - ADR: relational DB (Postgres) vs key-value (DynamoDB/Redis) for v1
+  - ADR: monolith vs split read/write services for v1
+
+**Checkpoint:** You can hand `HLD.md` to someone who has never seen the project and they understand what v1 is, what's in scope, what's out, and which questions remain. The ADRs name at least one rejected alternative each.
+
+**Constraint to respect:** Don't fill in deployment topology, container internals, or CI/CD details yet. Those belong to later phases — trying to design them now is guessing.
+
+**Concepts log:**
+
+- What does "design a URL shortener" actually mean as an interview question — what's the interviewer testing for?
+- Why pick relational over key-value for a write-heavy short-code service (and what would flip the answer)?
 
 ---
 
@@ -62,6 +120,14 @@ Just build the app on your machine. Get FastAPI fundamentals down before anythin
 - What FastAPI's dependency injection actually does (you know DI from your stack — what's different here?)
 - Why base62 and not base64 for short codes (URL-safety)
 - Collision strategy: retry-on-conflict vs check-before-insert (and why one is racy)
+
+**Design docs:**
+
+- ADR: short-code generation (length, alphabet, random vs sequential, collision handling)
+- ADR: sync vs async SQLAlchemy
+- ADR: schema for `urls` table (PK choice, indexing on `short_code`, why not store URL hash)
+- Update `HLD.md`: refine the v1 sketch with anything that turned out wrong once you actually built it
+- Update `LLD.md`: module layout under `app/`, who owns the DB session, request → session → transaction lifecycle, error taxonomy (which exceptions → which HTTP codes), Pydantic schemas as the API boundary
 
 ---
 
@@ -92,6 +158,13 @@ Now make the app run in a container. Locally only — still no AWS.
 - Docker layer caching: why is `COPY requirements.txt` separate from `COPY . .`
 - Bridge network in docker-compose: how does the app container reach `postgres` by hostname
 - Image vs container vs volume — your three-line explanation
+
+**Design docs:**
+
+- ADR: multi-stage build vs single-stage (with concrete size numbers from your "break it intentionally" run)
+- ADR: base image choice (e.g., `python:3.12-slim` vs `-alpine` vs distroless)
+- Update `HLD.md`: add the local-dev container topology
+- Update `LLD.md`: container internals (entrypoint, working dir, non-root UID, env-var contract, healthcheck)
 
 ---
 
@@ -125,6 +198,14 @@ Get your container running on AWS, by hand. No automation yet — that's the poi
 - Why running `docker compose up` interactively is bad — what happens when you close SSH
 - systemd vs `docker run --restart=always` for keeping containers alive
 
+**Design docs:**
+
+- ADR: Postgres in a container on EC2 vs RDS for v1 (cost, learning value, deferred to Phase 7)
+- ADR: t2.micro vs t3.micro, AMI choice
+- ADR: security group ingress rules (why SSH from your IP only, why 80 from anywhere)
+- Update `HLD.md`: add the deployment topology (EC2, SG, public IP)
+- Update `LLD.md`: on-host layout (where the compose file lives, how containers restart, where logs go, how env vars are supplied to the box)
+
 ---
 
 ## Phase 4 — ECR + IAM instance role (1–2 days)
@@ -155,6 +236,14 @@ Stop copying images around. Pull from a real registry, with proper auth.
 - The AWS credential chain: env vars → shared credentials file → instance role
 - Why hardcoded keys on a server is a fireable offense
 
+**Design docs:**
+
+- ADR: ECR private vs public repo
+- ADR: image tagging strategy (`latest` vs git SHA vs semver) and why
+- ADR: IAM instance role vs static keys on EC2 (least-privilege rationale)
+- Update `HLD.md`: add ECR to the deployment topology
+- Update `LLD.md`: how the EC2 box authenticates to ECR at pull time (credential chain, IMDS hop)
+
 ---
 
 ## Phase 5 — GitHub Actions CI/CD (2–3 days)
@@ -183,6 +272,15 @@ The whole loop, automated.
 - Why your GitHub Actions IAM user needs different (smaller) permissions than your EC2 instance role
 - The principle of least privilege, with concrete examples from your own setup
 - Why deploying via SSH is fine for v1 but not how big teams do it (foreshadowing for ECS/K8s discussions)
+
+**Design docs:**
+
+- ADR: deploy via SSH vs pull-based agent vs ECS/Fargate (why SSH is right for v1, what would force a change)
+- ADR: split CI and CD workflows vs one combined workflow
+- ADR: deploy-only IAM user permissions (exact policy and why each statement is there)
+- ADR: zero-downtime strategy for v1 (or explicit acknowledgement that v1 has a brief gap)
+- Update `HLD.md`: add the CI/CD pipeline diagram
+- Update `LLD.md`: workflow structure (jobs, steps, secrets, where each step runs), the deploy script's exact contract
 
 ---
 
