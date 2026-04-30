@@ -56,15 +56,15 @@ The goal of this project is interview-grade design thinking, not just working co
 
 Get accounts and tools ready before you write code.
 
-- [ ] AWS account created, MFA on root, IAM admin user with access keys
-- [ ] AWS CLI installed and configured locally
-- [ ] AWS Budgets alert set at $1 (you're free tier, but paranoia is healthy)
-- [ ] GitHub repo created, README skeleton, `.gitignore` for Python
-- [ ] Concepts log started (a single `NOTES.md` or Notion page — whatever you'll actually use)
-- [ ] Python 3.12 installed locally; Docker Desktop installed and running
-- [ ] `Docs/HLD.md` skeleton created (just headings — filled in during Phase 0.5)
-- [ ] `Docs/LLD.md` skeleton created (just headings — filled in starting Phase 1)
-- [ ] `Docs/decisions/0000-template.md` ADR template in place
+- [x] AWS account created, MFA on root, IAM admin user with access keys
+- [x] AWS CLI installed and configured locally
+- [x] AWS Budgets alert set at $1 (you're free tier, but paranoia is healthy)
+- [x] GitHub repo created, README skeleton, `.gitignore` for Python
+- [x] Concepts log started (a single `NOTES.md` or Notion page — whatever you'll actually use)
+- [x] Python 3.12 installed locally; Docker Desktop installed and running
+- [x] `Docs/HLD.md` skeleton created (just headings — filled in during Phase 0.5)
+- [x] `Docs/LLD.md` skeleton created (just headings — filled in starting Phase 1)
+- [x] `Docs/decisions/0000-template.md` ADR template in place
 
 **Concepts log entry:** What's the difference between AWS root user and IAM user? Why never use root for daily work?
 
