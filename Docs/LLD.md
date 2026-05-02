@@ -70,7 +70,7 @@ Where the compose file lives, how containers restart, where logs go, how env var
 
 ## 9. ECR auth flow
 
-How the EC2 box authenticates to ECR at pull time \u2014 credential chain, IMDS hop.
+How the EC2 box authenticates to ECR at pull time - credential chain, IMDS hop.
 
 *To be filled in Phase 4.*
 

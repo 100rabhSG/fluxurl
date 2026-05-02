@@ -88,8 +88,10 @@ How humans perceive latency (worth memorising):
 
 
 ### HTTP 301 vs 302
-Both are HTTP redirect status codes. From the user's immediate experience, they're identical, the only difference is caching. 
+Both are HTTP redirect status codes. From the user's immediate experience, they're identical, the only difference is caching.
 
-**301:** Browser cache the mapping, subsequent clicks on same short url bypass querying our server.
+**301:** Browser caches the mapping, subsequent clicks on same short url bypass querying our server.
 
 **302:** No caching, every click hits the server. More load on server, but you see every click.
+
+Picking 301 will silently break click analytics because clicks will never reach our servers.

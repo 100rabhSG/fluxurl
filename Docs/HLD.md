@@ -6,9 +6,30 @@
 
 ## 1. System context
 
-What Fluxurl is, who uses it, what's outside the system boundary.
+Fluxurl is a public URL shortener. Anyone on the internet can submit a long URL and receive a short code; anyone with the short code can be redirected to the original URL.
 
-*To be filled in Phase 1.*
+**Functional requirements (v1):**
+
+- **Shorten:** `POST /shorten` accepts a long URL, returns a generated short code (and full short URL).
+- **Redirect:** `GET /{short_code}` returns a 302 redirect to the original URL. Codes are unguessable, so lack of auth doesn't make them publicly enumerable.
+- **No authentication** for either operation. Anonymous users can shorten and redirect.
+- **No analytics** in v1 (deferred to Phase 6).
+
+**Scale assumptions (v1 target):**
+
+| Metric | Value |
+|---|---|
+| Registered users | 1M |
+| DAU | 50k (5% of registered) |
+| URLs created / day | 5k |
+| Redirects / day | 100k |
+| Read : Write ratio | **20 : 1** (read-heavy) |
+| Storage growth | ~1 GB / year (5k × 365 × ~500 B) |
+
+**Availability and durability targets (v1):**
+
+- **Availability:** target ~99% (single EC2 instance, no redundancy). Higher targets would require load balancing, health checks, and multi-AZ deployment — out of scope for v1.
+- **Durability:** no formal application-level target. Data lives on a single EBS volume with no backups. EBS itself provides ~99.8–99.9% annual durability. A volume failure or accidental deletion is unrecoverable in v1. Phase 7 (RDS migration) introduces automated backups.
 
 ## 2. Components
 
@@ -50,13 +71,33 @@ What can break, what happens when it does, what's acceptable for v1.
 
 ## 7. Scaling story
 
-What works today, what breaks at scale, what we'd change first.
+Throughput analysis from the v1 scale targets:
 
-*To be filled at v1 Done — Take Stock.*
+| Rate | Average | Peak (10×) |
+|---|---|---|
+| Writes (`POST /shorten`) | ~0.06 / sec (1 every ~17 s) | ~0.6 / sec |
+| Reads (`GET /{code}`) | ~1.2 / sec | ~12 / sec |
+
+**What this means for v1 design:**
+
+- A single small EC2 instance with a single Postgres container handles peak load with massive headroom.
+- **No sharding, no read replicas, no caching** are needed for *performance* at v1 scale.
+- Caching may still be added later for *latency* reasons (a different argument from throughput — noted for Phase 10).
 
 ## 8. Out of scope for v1
 
-Tracked here so reviewers know what was *deliberately* deferred:
+Deliberately deferred. Each cut is intentional, not forgotten.
+
+**Product features cut:**
+
+- **URL expiry** — see [ADR 0002](decisions/0002-no-url-expiry-v1.md). Requires a background job + deletion strategy; cost outweighs the value at v1 scale.
+- **Custom / vanity short codes** — system generates codes; user has no input on length or characters.
+- **User accounts / auth / login** — no signup flow in v1.
+- **URL editing or deletion** — once created, a short URL is permanent.
+- **Click analytics** — deferred to Phase 6 (separate `clicks` table, `/stats` endpoint).
+- **Rate limiting** — deferred to Phase 10 (Redis).
+
+**Infrastructure cut:**
 
 - Kubernetes / ECS / Fargate / Lambda
 - CloudFront / Route 53 / API Gateway
