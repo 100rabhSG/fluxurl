@@ -4,3 +4,5 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
+# B008: FastAPI's Depends/Query/etc. are designed to be used as default args.
+ignore = ["B008"]
