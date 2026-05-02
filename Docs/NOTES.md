@@ -85,3 +85,11 @@ How humans perceive latency (worth memorising):
 | 300ms–1s     | Noticeable lag. User starts feeling it.     |
 | 1–3s         | Slow. User wonders if it's broken.          |
 | > 3s         | Broken. ~40% give up.                       |
+
+
+### HTTP 301 vs 302
+Both are HTTP redirect status codes. From the user's immediate experience, they're identical, the only difference is caching. 
+
+**301:** Browser cache the mapping, subsequent clicks on same short url bypass querying our server.
+
+**302:** No caching, every click hits the server. More load on server, but you see every click.
