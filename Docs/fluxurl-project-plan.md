@@ -78,12 +78,10 @@ Before writing a line of app code, design v1 as if it were an interview question
 
 **Build:**
 
-- [ ] Fill in `Docs/HLD.md` sections 1–4 (system context, components, data model, request flows) at a black-box level
-- [ ] Fill in section 8 (out of scope for v1) — explicitly
-- [ ] List open questions in section 9 — anything you genuinely don't know yet
-- [ ] Write 1–2 ADRs for decisions you've already implicitly made:
-  - ADR: relational DB (Postgres) vs key-value (DynamoDB/Redis) for v1
-  - ADR: monolith vs split read/write services for v1
+- [x] Fill in `Docs/HLD.md` sections 1–4 (system context, components, data model, request flows) at a black-box level
+- [x] Fill in section 8 (out of scope for v1) — explicitly
+- [x] List open questions in section 9 — anything you genuinely don't know yet
+- [x] Write ADRs for decisions you've already implicitly made (see `Docs/decisions/0001`–`0004`)
 
 **Checkpoint:** You can hand `HLD.md` to someone who has never seen the project and they understand what v1 is, what's in scope, what's out, and which questions remain. The ADRs name at least one rejected alternative each.
 
