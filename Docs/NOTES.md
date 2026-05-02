@@ -95,3 +95,16 @@ Both are HTTP redirect status codes. From the user's immediate experience, they'
 **302:** No caching, every click hits the server. More load on server, but you see every click.
 
 Picking 301 will silently break click analytics because clicks will never reach our servers.
+
+
+## [some heading]
+
+### Image vs Container
+An image is a blueprint, while a container is a running instance created from that blueprint. (similar to class and object).
+
+### docker compose down vs down -v
+| Command | What it does | When |
+|---|---|---|
+| `docker compose down` | Removes containers + network. Keeps volumes. | Daily — safe |
+| `docker compose down -v` | Also removes volumes. Wipes data. | Only when you want a clean slate |
+| `docker compose stop` | Pauses/stops containers (keeps everything) | If you'll restart soon |
