@@ -2,7 +2,7 @@
 
 > Living document. Updated as each phase changes the architecture. See `Docs/decisions/` for the *why* behind each choice.
 >
-> **Status:** v1 design — Phase 0.5 complete. Phases 1–5 not yet built.
+> **Status:** v1 design — Phase 1 complete. Phases 2–5 not yet built.
 
 ---
 
@@ -63,12 +63,11 @@ Logical sketch — exact column types and constraints decided in Phase 1.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | PK | Choice between BIGINT auto-increment vs UUID is a Phase 1 ADR |
-| `short_code` | VARCHAR(7) | UNIQUE, indexed (read path looks up by this) |
-| `long_url` | TEXT | NOT NULL. Sanity max length TBD (see open questions) |
-| `created_at` | TIMESTAMPTZ | Default `now()` |
+| `short_code` | VARCHAR(7), **PK** | Natural primary key — see [ADR 0005](decisions/0005-primary-key-for-urls-table.md) |
+| `long_url` | TEXT | NOT NULL. Pydantic enforces max 2083 chars at the API boundary |
+| `created_at` | TIMESTAMPTZ | `server_default=now()`, NOT NULL |
 
-No foreign keys, no other tables in v1. (`clicks` table arrives with Phase 6 analytics.)
+No surrogate `id` column. No foreign keys, no other tables in v1. (`clicks` table arrives with Phase 6 analytics.)
 
 ---
 
@@ -162,11 +161,11 @@ Deliberately deferred. Each cut is intentional, not forgotten.
 
 ---
 
-## 9. Open questions
+## 9. Open questions (resolved)
 
-Things not yet decided. Each should turn into an ADR (or be folded into an existing one) when resolved.
+All Phase 1 questions have been resolved:
 
-- **Primary key for `urls`** — BIGINT auto-increment vs UUID? (Phase 1 ADR)
-- **URL validation strictness** — accept only `http(s)://`? Reject relative URLs? Reject malformed schemes? (Phase 1)
-- **Max length of `long_url`** — Postgres `TEXT` is unbounded; sanity cap (e.g., 2048 chars) probably wise. (Phase 1)
-- **404 behavior** — plain 404 vs branded "link not found" page? (Probably plain 404 in v1, but worth confirming.)
+- ~~**Primary key for `urls`**~~ → `short_code` as natural PK. See [ADR 0005](decisions/0005-primary-key-for-urls-table.md).
+- ~~**URL validation strictness**~~ → Pydantic `HttpUrl` validates format (requires scheme + host). Accepts `http` and `https`; rejects relative URLs and malformed schemes.
+- ~~**Max length of `long_url`**~~ → Pydantic `HttpUrl` enforces 2083-char limit (browser standard). No additional app-level check.
+- ~~**404 behavior**~~ → Plain JSON `{"detail": "short code not found"}`. Same message for invalid shape and valid-but-missing (prevents information leakage).
