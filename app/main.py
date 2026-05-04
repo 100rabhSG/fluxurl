@@ -6,7 +6,6 @@ from app.api import urls as urls_router
 from app.db.session import get_session
 
 app = FastAPI(title="Fluxurl")
-app.include_router(urls_router.router)
 
 
 @app.get("/")
@@ -18,4 +17,9 @@ async def root() -> dict[str, str]:
 async def healthz(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
     await session.execute(text("SELECT 1"))
     return {"db": "ok"}
+
+
+# Mounted last so static routes (/, /healthz, /docs, /openapi.json) take precedence
+# over the catch-all /{short_code} redirect handler.
+app.include_router(urls_router.router)
 

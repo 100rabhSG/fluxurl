@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,9 +8,10 @@ from app.config import get_settings
 from app.db.session import get_session
 from app.models import Url
 from app.schemas import ShortenRequest, ShortenResponse
-from app.services.shortener import generate_short_code
+from app.services.shortener import ALPHABET, DEFAULT_LENGTH, generate_short_code
 
 MAX_COLLISION_RETRIES = 5
+_ALPHABET_SET = frozenset(ALPHABET)
 
 router = APIRouter()
 
@@ -40,3 +43,29 @@ async def shorten(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Could not generate a unique short code; please retry.",
     )
+
+
+@router.get("/{short_code}")
+async def redirect_to_long_url(
+    short_code: str,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    if len(short_code) != DEFAULT_LENGTH or not _ALPHABET_SET.issuperset(short_code):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="short code not found",
+        )
+
+    result = await session.execute(select(Url).where(Url.short_code == short_code))
+    url = result.scalar_one_or_none()
+    if url is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="short code not found",
+        )
+
+    return RedirectResponse(
+        url=url.long_url,
+        status_code=status.HTTP_302_FOUND,
+    )
+
