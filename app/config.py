@@ -11,6 +11,10 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://fluxurl:fluxurl@localhost:5432/fluxurl",
         description="Async SQLAlchemy URL for Postgres.",
     )
+    base_url: str = Field(
+        default="http://localhost:8000",
+        description="Public base URL used to build short URLs in API responses.",
+    )
 
 
 @lru_cache
