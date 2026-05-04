@@ -97,7 +97,7 @@ Both are HTTP redirect status codes. From the user's immediate experience, they'
 Picking 301 will silently break click analytics because clicks will never reach our servers.
 
 
-## [some heading]
+## Docker basics
 
 ### Image vs Container
 An image is a blueprint, while a container is a running instance created from that blueprint. (similar to class and object).
@@ -108,3 +108,49 @@ An image is a blueprint, while a container is a running instance created from th
 | `docker compose down` | Removes containers + network. Keeps volumes. | Daily — safe |
 | `docker compose down -v` | Also removes volumes. Wipes data. | Only when you want a clean slate |
 | `docker compose stop` | Pauses/stops containers (keeps everything) | If you'll restart soon |
+
+
+## Python basics
+
+### What does `@app.get("/users")` do?
+This decorator tells fast API:
+
+``` Register the below function as handler for HTTP GET request on /users ```
+
+Internally, it's similar to:
+```
+def get_users():
+    return ["Alice", "Bob"]
+
+app.get("/users")(get_users)
+```
+
+### What is databse migration?
+Any application's database schema may change over it's lifetime - tables, columns, constraints, index. Now if you apply all these changes manually across all your environments, it'll get messy and there are high chances of mistakes.
+
+A migration is a single, named, ordered schema change, consisting of two halves:
+- "Going forward" - what to do (e.g., create url table)
+- "Going backward" - how to undo it (e.g., drop the url table)
+
+A migration is a file, committed to your repo, that captures one such specific change. It looks roughly like:
+```python
+# 0001_create_urls_table.py
+
+def upgrade():
+    op.create_table(
+        'urls',
+        Column('short_code', String(7), primary_key=True),
+        Column('long_url', Text, nullable=False),
+        Column('created_at', TIMESTAMP, nullable=False),
+    )
+
+def downgrade():
+    op.drop_table('urls')
+```
+
+
+### Why do we need Alembic?
+Alembic is migration tool for SQLAlchemy. It does three jobs:
+- Generate migration files for you (`alembic revision --autogenerate`)
+- Apply migrations (`alembic upgrade head` / `alembic downgrade -1`)
+- Track which migrations have been applied (`alembic_version`)
