@@ -1,6 +1,8 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Alembic auto-generates migration files from a stock template; not worth linting.
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
