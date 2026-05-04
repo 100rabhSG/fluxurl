@@ -100,12 +100,12 @@ Just build the app on your machine. Get FastAPI fundamentals down before anythin
 
 **Build:**
 
-- [ ] FastAPI project skeleton (`app/main.py`, `app/api/`, `app/models/`, `app/db/`)
-- [ ] Postgres running locally (Docker container is fine, but only as a dev dependency — no app containerisation yet)
-- [ ] SQLAlchemy async setup, single `urls` table: `id`, `short_code`, `long_url`, `created_at`
-- [ ] Alembic initialised, first migration creates the table
+- [x] FastAPI project skeleton (`app/main.py`, `app/api/`, `app/models/`, `app/db/`)
+- [x] Postgres running locally (Docker container is fine, but only as a dev dependency — no app containerisation yet)
+- [x] SQLAlchemy async setup, single `urls` table: `short_code` (PK), `long_url`, `created_at` (no surrogate `id`)
+- [x] Alembic initialised, first migration creates the table
 - [ ] `POST /shorten` — takes a long URL, generates 7-char base62 short code, returns the short URL
-- [ ] `GET /{short_code}` — looks up code, returns 301 redirect (or 404)
+- [ ] `GET /{short_code}` — looks up code, returns 302 redirect (or 404)
 - [ ] Pydantic schemas for request/response
 - [ ] Basic error handling (invalid URL, code not found, code collision on insert)
 - [ ] 5–10 pytest tests covering happy path and edge cases
