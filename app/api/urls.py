@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.session import get_session
 from app.models import Url
-from app.schemas import ShortenRequest, ShortenResponse
+from app.schemas import ErrorResponse, ShortenRequest, ShortenResponse
 from app.services.shortener import ALPHABET, DEFAULT_LENGTH, generate_short_code
 
 MAX_COLLISION_RETRIES = 5
@@ -16,7 +16,15 @@ _ALPHABET_SET = frozenset(ALPHABET)
 router = APIRouter()
 
 
-@router.post("/shorten", response_model=ShortenResponse)
+@router.post(
+    "/shorten",
+    response_model=ShortenResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        422: {"model": ErrorResponse, "description": "Invalid or too-long URL"},
+        500: {"model": ErrorResponse, "description": "Short code generation failed"},
+    },
+)
 async def shorten(
     payload: ShortenRequest,
     session: AsyncSession = Depends(get_session),
@@ -45,7 +53,14 @@ async def shorten(
     )
 
 
-@router.get("/{short_code}")
+@router.get(
+    "/{short_code}",
+    status_code=status.HTTP_302_FOUND,
+    responses={
+        302: {"description": "Redirect to the original long URL"},
+        404: {"model": ErrorResponse, "description": "Short code not found"},
+    },
+)
 async def redirect_to_long_url(
     short_code: str,
     session: AsyncSession = Depends(get_session),

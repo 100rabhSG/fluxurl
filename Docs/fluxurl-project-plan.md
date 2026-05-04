@@ -106,9 +106,9 @@ Just build the app on your machine. Get FastAPI fundamentals down before anythin
 - [x] Alembic initialised, first migration creates the table
 - [x] `POST /shorten` — takes a long URL, generates 7-char base62 short code, returns the short URL
 - [x] `GET /{short_code}` — looks up code, returns 302 redirect (or 404)
-- [ ] Pydantic schemas for request/response
-- [ ] Basic error handling (invalid URL, code not found, code collision on insert)
-- [ ] 5–10 pytest tests covering happy path and edge cases
+- [x] Pydantic schemas for request/response
+- [x] Basic error handling (invalid URL, code not found, code collision on insert)
+- [x] 5–10 pytest tests covering happy path and edge cases
 
 **Checkpoint:** You can `curl -X POST localhost:8000/shorten -d '{"url":"..."}'`, get a short code, then `curl -L localhost:8000/{code}` and get redirected. Tests pass.
 
