@@ -175,3 +175,10 @@ The correct approach is to enforce uniqueness at database level and use optimist
 - Attempt the insert directly
 - Let the database reject duplicates
 - Catch the constraint error
+
+### Route matching order
+In `main.py` if we had put `app.include_router(urls_router.router)` before all other routes, the other routes will never be hit.
+
+Unlike ASP.NET routing (which scores route by specificity), FastAPI just iterates routes in the order they were added and picks the first match. 
+
+A catch-all registered first will swallow `/healthz` even though /healthz is more specific. Mount catch-all at last.
