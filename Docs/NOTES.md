@@ -154,3 +154,24 @@ Alembic is migration tool for SQLAlchemy. It does three jobs:
 - Generate migration files for you (`alembic revision --autogenerate`)
 - Apply migrations (`alembic upgrade head` / `alembic downgrade -1`)
 - Track which migrations have been applied (`alembic_version`)
+
+### Pydantic models vs ORM Models
+Two distinct types of model class even though both are called "model"
+- Pydantic models = data contracts at the API boundary
+- SQLAlchemy ORM models = db row mappings
+
+| Aspect            | SQLAlchemy Url                | Pydantic ShortenRequest/Response |
+|------------------|------------------------------|----------------------------------|
+| Lives in         | app/models/url.py            | app/schemas/url.py               |
+| Represents       | A row in the urls table      | A JSON body crossing the API     |
+| Used for         | DB queries, persistence      | Request validation, response serialization |
+| .NET analogy     | EF entity                    | DTO / record                     |
+
+
+### Optimistic conflict handling vs check-then-insert 
+_Check then insert_ i.e. query first, then insert if not found, is unsafe for concurrent systems. If two request, both query at the same time will see record not found so both will try to insert, and the later one will fail.
+
+The correct approach is to enforce uniqueness at database level and use optimistic conflict handling. 
+- Attempt the insert directly
+- Let the database reject duplicates
+- Catch the constraint error
