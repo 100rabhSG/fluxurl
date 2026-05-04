@@ -1,3 +1,3 @@
-from app.schemas.url import ShortenRequest, ShortenResponse
+from app.schemas.url import ErrorResponse, ShortenRequest, ShortenResponse
 
-__all__ = ["ShortenRequest", "ShortenResponse"]
+__all__ = ["ErrorResponse", "ShortenRequest", "ShortenResponse"]
