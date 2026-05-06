@@ -97,19 +97,6 @@ Both are HTTP redirect status codes. From the user's immediate experience, they'
 Picking 301 will silently break click analytics because clicks will never reach our servers.
 
 
-## Docker basics
-
-### Image vs Container
-An image is a blueprint, while a container is a running instance created from that blueprint. (similar to class and object).
-
-### docker compose down vs down -v
-| Command | What it does | When |
-|---|---|---|
-| `docker compose down` | Removes containers + network. Keeps volumes. | Daily — safe |
-| `docker compose down -v` | Also removes volumes. Wipes data. | Only when you want a clean slate |
-| `docker compose stop` | Pauses/stops containers (keeps everything) | If you'll restart soon |
-
-
 ## Python basics
 
 ### What does `@app.get("/users")` do?
@@ -182,3 +169,59 @@ In `main.py` if we had put `app.include_router(urls_router.router)` before all o
 Unlike ASP.NET routing (which scores route by specificity), FastAPI just iterates routes in the order they were added and picks the first match. 
 
 A catch-all registered first will swallow `/healthz` even though /healthz is more specific. Mount catch-all at last.
+
+
+## Docker basics
+
+### Image vs Container
+An image is a blueprint, while a container is a running instance created from that blueprint. (similar to class and object).
+
+### docker compose down vs down -v
+| Command | What it does | When |
+|---|---|---|
+| `docker compose down` | Removes containers + network. Keeps volumes. | Daily — safe |
+| `docker compose down -v` | Also removes volumes. Wipes data. | Only when you want a clean slate |
+| `docker compose stop` | Pauses/stops containers (keeps everything) | If you'll restart soon |
+
+### What does "build" mean in python vs compiled languages (C++, Go, C#, Java)
+For compiled languages like C++, Rust, Go, "build" means turning source code into compiled binary.
+
+For pure python, build doesn't produce binary. At build dependencies are installed, and runtime environment is prepared. We next stage we ship this prepared environment plus our source code - without the tools that did installing.
+
+### What is a multistage docker file?
+A normal docker file has one `FROM` instruction and everything happens in that one base image - install dependencies, copy code, run the app.
+
+A multistage docker file has multiple `FROM` instructions, each starting a new stage. Stages can copy files from previous stages, but anything that is not copied is discarded.
+
+```
+Stage 1: builder
+  - Heavy base image with all the build tools
+  - Install dependencies, compile what needs compiling
+  - Produces artifacts (installed packages, binaries, .so files, etc.)
+
+Stage 2: runtime
+  - Minimal base image (no build tools)
+  - Copy only the artifacts from Stage 1
+  - Run the app
+
+Final shipped image = only Stage 2.
+Stage 1 is discarded from the image but cached on the build machine.
+```
+
+### Why multistage even matters?
+1. **Image size.** Typical Python app:
+   - Single-stage on `python:3.12`: ~1.2 GB
+   - Multi-stage with `python:3.12-slim` runtime: ~150 MB
+2. **Security surface area.** Every package in the runtime image is potential attack surface. Smaller image = fewer CVEs to track.
+3. **Build cache efficiency.** Multi-stage encourages structuring the Dockerfile so dependency installs are cached separately from code changes.
+4. **Separation of concerns.** Each stage has a clear single role.
+
+### Where does build and runtime actually happen?
+This is the biggest thing that makes multistage worthwhile. The same docker file defines both stages, but each stage has different role and different destination.
+
+| Stage | Where it runs | Lives forever on | What it produces |
+|---|---|---|---|
+| Builder | Build machine (laptop / GitHub Actions runner) | Build machine cache | Installed dependencies, compiled `.so` files |
+| Runtime | Build machine briefly (during `docker build`), then EC2 | ECR (pushed image), EC2 (local copy after pull) | The small image that gets pushed to ECR |
+ 
+The build machine is the *only* place that ever needs gcc, pip, or build headers. Those tools never leave the build machine — they're used during the builder stage and then *not copied* into the runtime stage. EC2 never sees them.
