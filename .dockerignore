@@ -1,0 +1,29 @@
+# Python build artifacts — laptop-specific, never belong in a build.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+
+# Local virtualenv — host-built binaries, will not work in the container.
+.venv/
+
+# Secrets — must never enter the build context.
+.env
+
+# VCS — large and irrelevant to building the app.
+.git/
+.gitignore
+
+# Editor / IDE config.
+.vscode/
+
+# CI workflows — useful in the repo, not in the image.
+.github/
+
+# Files not needed at runtime.
+tests/
+Docs/
+README.md
+requirements-dev.txt
+pyproject.toml
