@@ -1,4 +1,4 @@
-# ADR 0008: Base image — `python:3.12-slim` over full Debian or Alpine
+# ADR 0007: Base image — `python:3.12-slim` over full Debian or Alpine
 
 - **Status:** Accepted
 - **Date:** 2026-05-07
@@ -61,7 +61,7 @@ The whole point of Alpine is binary size, but for a stack that depends on glibc 
 ## Consequences
 
 - Wheels for `asyncpg` and `psycopg[binary]` install in their precompiled form — no compiler needed in the image at runtime.
-- If a future dependency is pure-source-only (no manylinux wheel), the Dockerfile will need a build stage that adds `build-essential` and then discards it — this is the trigger for moving to a multi-stage build (planned in the next iteration of Phase 2, ADR 0007).
+- If a future dependency is pure-source-only (no manylinux wheel), the Dockerfile will need a build stage that adds `build-essential` and then discards it — this is the trigger for moving to a multi-stage build (planned in the next iteration of Phase 2, ADR 0008).
 - Image size baseline for the single-stage build is ~298 MB. That's the number future optimisations (multi-stage, non-root user, removed `pip` cache) will be measured against.
 - Sticking with Debian-family means `apt-get` is available if a system library is ever needed — no need to learn `apk` quirks.
 - Revisit if: (a) a critical dependency drops glibc wheel support, or (b) image size becomes a real bottleneck on the deployment path (unlikely on EC2, more likely if this ever moves to Lambda).
