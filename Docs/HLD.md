@@ -2,7 +2,7 @@
 
 > Living document. Updated as each phase changes the architecture. See `Docs/decisions/` for the *why* behind each choice.
 >
-> **Status:** v1 design — Phase 1 complete. Phases 2–5 not yet built.
+> **Status:** v1 design — Phases 1–2 complete. Phases 3–5 not yet built.
 
 ---
 
@@ -78,7 +78,7 @@ Happy paths only. Error and edge-case handling decided in Phase 1.
 **`POST /shorten`:**
 
 1. Receive long URL in request body.
-2. Validate it's a well-formed URL (strictness TBD — see open questions).
+2. Validate it's a well-formed URL.
 3. Generate 7-char random base62 code using `secrets` (cryptographically secure RNG).
 4. Insert `(short_code, long_url)` into `urls` table.
 5. On unique-constraint collision: regenerate code, retry. Max 5 retries before returning 500.
@@ -96,7 +96,61 @@ Happy paths only. Error and edge-case handling decided in Phase 1.
 
 Where each component runs, how they talk, network boundaries.
 
-*v1 target: single EC2 instance running the API and Postgres as Docker containers, no load balancer, no reverse proxy. Detailed topology is added incrementally — local dev in Phase 2, EC2 in Phase 3, ECR in Phase 4.*
+*v1 target: single EC2 instance running the API and Postgres as Docker containers, no load balancer, no reverse proxy. Built up incrementally — local dev below, EC2 in Phase 3, ECR in Phase 4.*
+
+### 5.1 Local-dev topology (Phase 2)
+
+`docker compose up` launches three containers on a single user-defined bridge network. Two of them stay running; one is one-shot.
+
+```
+┌──────────────────── host machine ────────────────────┐
+│                                                       │
+│  browser ──► localhost:8000 ──┐                       │
+│                                │                      │
+│   ┌─────────── compose network (bridge) ──────────┐   │
+│   │                            ▼                  │   │
+│   │                   ┌─────────────────┐         │   │
+│   │   migrate ──►     │      app        │         │   │
+│   │  (one-shot,       │  (FastAPI,      │         │   │
+│   │   exits 0)        │   uvicorn)      │         │   │
+│   │       │           └────────┬────────┘         │   │
+│   │       │                    │                  │   │
+│   │       └──── via "db" ──────┤                  │   │
+│   │                            ▼                  │   │
+│   │                   ┌─────────────────┐         │   │
+│   │                   │      db         │         │   │
+│   │                   │  (postgres:16)  │         │   │
+│   │                   └─────────────────┘         │   │
+│   └────────────────────────────────────────────────┘  │
+│                                                       │
+│  localhost:5432 ◄── (port-mapped for dev convenience) │
+└───────────────────────────────────────────────────────┘
+```
+
+**How they talk:**
+
+- The host reaches `app` through the published port `8000:8000`. Postgres is also port-mapped (`5432:5432`) for local inspection from the host — a dev convenience, not something a production topology would expose.
+- Inside the network, `app` and `migrate` resolve the database at the hostname `db`. Compose's default network resolves **service names** to container IPs via Docker's embedded DNS — that's why `DATABASE_URL` uses `@db:5432`.
+
+**Lifecycle ordering:**
+
+1. `db` starts and passes its `pg_isready` healthcheck.
+2. `migrate` runs `alembic upgrade head`, exits 0, and terminates.
+3. `app` starts (gated on `migrate` having completed successfully) and begins serving traffic.
+
+The rationale for the separate `migrate` service is in [ADR 0010](decisions/0010-migration-strategy.md).
+
+**What is the deployable unit?**
+
+The **image**, not the source code or the compose file. `app` and `migrate` use the *same locally-built image*, differentiated only by their `command`. `db` uses the upstream `postgres:16` image from Docker Hub. Phase 4 pushes the locally-built image to ECR; Phase 3 runs that same image on EC2. The compose file is environment-specific glue.
+
+**What is *not* in this topology yet, and where it shows up:**
+
+- No reverse proxy (Nginx) — Phase 9.
+- No external image registry — image is built locally; ECR arrives in Phase 4.
+- No managed database — `postgres:16` runs as a sibling container; RDS replaces it in Phase 7.
+- No TLS / custom domain — Phase 9.
+- No process supervisor — `docker compose up` is interactive; on EC2 in Phase 3 we'll need `--restart=always` or systemd to keep containers alive across reboots.
 
 ---
 
