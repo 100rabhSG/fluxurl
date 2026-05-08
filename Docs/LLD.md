@@ -142,7 +142,76 @@ class ErrorResponse(BaseModel):
 
 ## 7. Container internals
 
-*To be filled in Phase 2.*
+White-box view of the image that runs `app` and `migrate`. The black-box topology is in `HLD.md` §5.1.
+
+### 7.1 Build shape
+
+Two-stage Dockerfile (see [ADR 0008](decisions/0008-multistage-dockerfile.md)).
+
+- **Stage 1 (builder)** — `python:3.12` (full image, has gcc/headers in case a dependency needs to compile). Creates an isolated venv at `/opt/venv` and `pip install`s `requirements.txt` into it.
+- **Stage 2 (runtime)** — `python:3.12-slim` (see [ADR 0007](decisions/0007-base-image-python-slim.md)). Copies *only* the populated venv from the builder, then the application code.
+
+What stays vs what is discarded:
+
+| Kept in runtime | Discarded between stages |
+|---|---|
+| `/opt/venv` (installed packages) | gcc, build-essential, Python headers |
+| `/app/app/`, `/app/alembic/`, `/app/alembic.ini` | pip cache, source tarballs |
+| | Anything `.dockerignore` filtered out of the build context |
+
+The `.dockerignore` file enforces what never enters the build context in the first place: `.git/`, `.venv/`, `.env`, `tests/`, `Docs/`, `__pycache__/`, IDE config.
+
+### 7.2 Filesystem layout (runtime image)
+
+```
+/app/                  ← WORKDIR
+├── app/               ← application code
+├── alembic/           ← migration scripts
+└── alembic.ini
+
+/opt/venv/             ← isolated Python environment
+├── bin/uvicorn
+├── bin/alembic
+└── lib/python3.12/site-packages/
+```
+
+`ENV PATH="/opt/venv/bin:$PATH"` puts the venv's `bin/` first on `PATH`, so `uvicorn` and `alembic` resolve to the venv versions without needing to `activate` it.
+
+### 7.3 Identity
+
+- Image build runs as `root` (Docker default). The runtime stage stays root through `COPY` so it can write into `/app`.
+- A `useradd -u 1000 -m appuser` creates a non-root user with a fixed UID; `USER appuser` switches identity for the running process.
+- Files COPY'd while root are owned by root but have default mode 644 / 755 — appuser can read code and execute binaries without owning them. The app does not write to disk at runtime, so write access is unneeded.
+- Rationale and threat model in [ADR 0009](decisions/0009-non-root-container-user.md).
+
+### 7.4 Env-var contract
+
+The image declares a contract — the variables its process needs in its environment to run. The contract is *what* the app expects, not *how* it gets there.
+
+| Variable | Required? | Read by | Behavior if missing |
+|---|---|---|---|
+| `DATABASE_URL` | **Yes** | `app/config.py` (pydantic-settings) | Fail-fast on startup with a Pydantic validation error (no default) |
+
+**How the contract is satisfied per environment:**
+
+| Environment | Mechanism |
+|---|---|
+| Host uvicorn (Phase 1, dev) | `.env` file in the working dir — pydantic-settings auto-loads it via `SettingsConfigDict(env_file=".env")` |
+| Container via compose (Phase 2) | `.env` is excluded by `.dockerignore` and never enters the image. Compose's `environment:` block injects `DATABASE_URL` as an OS-level env var into the container; pydantic-settings reads `os.environ` |
+| EC2 / ECR (Phase 3+) | Same image; supplied by whatever runs the container on the box (compose-on-EC2, systemd, `docker run -e`) |
+
+The app code has no branch for "am I in a container?" — pydantic-settings reads from the environment regardless of how the value got there. The `.env` file is a host-only dev affordance, deliberately excluded from the image so secrets don't get baked in. Refusing to boot without `DATABASE_URL` is intentional: a wrong-but-present value silently connects to the wrong database; an absent one is loud.
+
+### 7.5 Network surface
+
+- `EXPOSE 8000` is **documentation only**. It does not publish the port to the host — it is a hint to readers and tools about which port the process listens on.
+- The actual host-to-container mapping (`8000:8000`) is set in `docker-compose.yml`, not in the image. The image is unaware of how it will be reached.
+
+### 7.6 Process model — one image, two commands
+
+The image declares `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]` as its default. Compose uses this directly for the `app` service. The `migrate` service overrides `command` with `["alembic", "upgrade", "head"]` — same image, different process. PID 1 is whichever binary `CMD` resolves to (no entrypoint script wraps it).
+
+This is what makes the HLD's "deployable unit = image" claim concrete: the image is a self-contained tool that can run *either* the web server or the migration runner. Compose decides which.
 
 ## 8. On-host layout (EC2)
 
