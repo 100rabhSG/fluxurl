@@ -30,9 +30,8 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
-# Create a non-root user with a fixed UID. Build steps above ran as root
-# (the only place root is genuinely needed); runtime drops to appuser so any
-# in-container compromise lands on a UID with no write access to system paths.
+# Create a non-root user with a fixed UID. Build steps above ran as root (the only place root is genuinely needed);
+# runtime drops to appuser so any in-container compromise lands on a UID with no write access to system paths.
 RUN useradd -u 1000 -m appuser
 USER appuser
 
