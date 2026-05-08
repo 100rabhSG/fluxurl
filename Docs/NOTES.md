@@ -188,6 +188,28 @@ For compiled languages like C++, Rust, Go, "build" means turning source code int
 
 For pure python, build doesn't produce binary. At build dependencies are installed, and runtime environment is prepared. We next stage we ship this prepared environment plus our source code - without the tools that did installing.
 
+### What is "build context"?
+Build context is the set of files/folders Docker sends to docker daemon during `docker build .`. Here `.` is the build context.
+
+Docker can access only the files inside build context during build. Unnecessary files in context can increase image size (though not necessarily). Use `.dockerignore` to exclude unwanted files.
+
+### On what factors does docker image size depend?
+Docker image size mainly depend on these factors:
+1. **Base image:** ubuntu, node, sdk, images are larger. Alpine, slim, distroless are smaller.
+2. **Dependencies:** Installed packages (npm, NuGet, pip, OS packages). More dependencies = bigger image.
+3. **Build artifact:** Source code, test files, logs, .git, temp file accidentally copied into image.
+4. **Build context:** Large context slows build and may increase image size. (Only if we do broad copies like `COPY . .`)
+5. Single-stage vs multi-stage build.
+6. **Docker layers:** Each instruction creates a layer.
+
+Key optimization techniques:
+- Use smaller base images
+- Use multi-stage builds
+- Add .dockerignore
+- Remove caches/temp files
+- copy only required files
+
+
 ### What is a multistage docker file?
 A normal docker file has one `FROM` instruction and everything happens in that one base image - install dependencies, copy code, run the app.
 
@@ -211,7 +233,7 @@ Stage 1 is discarded from the image but cached on the build machine.
 ### Why multistage even matters?
 1. **Image size.** Typical Python app:
    - Single-stage on `python:3.12`: ~1.2 GB
-   - Multi-stage with `python:3.12-slim` runtime: ~150 MB
+   - Multi-stage with `python:3.12-slim` runtime: ~300 MB
 2. **Security surface area.** Every package in the runtime image is potential attack surface. Smaller image = fewer CVEs to track.
 3. **Build cache efficiency.** Multi-stage encourages structuring the Dockerfile so dependency installs are cached separately from code changes.
 4. **Separation of concerns.** Each stage has a clear single role.
