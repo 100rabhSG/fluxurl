@@ -121,9 +121,9 @@ Just build the app on your machine. Get FastAPI fundamentals down before anythin
 
 **Design docs:**
 
-- ADR: short-code generation (length, alphabet, random vs sequential, collision handling)
-- ADR: sync vs async SQLAlchemy
-- ADR: schema for `urls` table (PK choice, indexing on `short_code`, why not store URL hash)
+- ADR: short-code generation — split across [0001](decisions/0001-short-code-length.md) (length) and [0004](decisions/0004-short-code-generation-algorithm.md) (alphabet, random vs sequential, collision handling)
+- ADR: sync vs async SQLAlchemy — [0006](decisions/0006-async-sqlalchemy.md)
+- ADR: schema for `urls` table — [0005](decisions/0005-primary-key-for-urls-table.md) covers PK choice. Indexing on `short_code` is implicit (PK auto-indexes); not separately ADR'd. "Why not store URL hash" not pursued (no use case in v1: no de-dup requirement, redirects look up by code, not URL).
 - Update `HLD.md`: refine the v1 sketch with anything that turned out wrong once you actually built it
 - Update `LLD.md`: module layout under `app/`, who owns the DB session, request → session → transaction lifecycle, error taxonomy (which exceptions → which HTTP codes), Pydantic schemas as the API boundary
 
@@ -159,8 +159,10 @@ Now make the app run in a container. Locally only — still no AWS.
 
 **Design docs:**
 
-- ADR: multi-stage build vs single-stage (with concrete size numbers from your "break it intentionally" run)
-- ADR: base image choice (e.g., `python:3.12-slim` vs `-alpine` vs distroless)
+- ADR: multi-stage build vs single-stage — [0008](decisions/0008-multistage-dockerfile.md) (with concrete size numbers from the "break it intentionally" run)
+- ADR: base image choice — [0007](decisions/0007-base-image-python-slim.md) (`python:3.12-slim` vs `-alpine` vs distroless)
+- ADR: non-root container user — [0009](decisions/0009-non-root-container-user.md) *(not in original plan; added because the build item required justifying the threat model)*
+- ADR: migration strategy — [0010](decisions/0010-migration-strategy.md) *(not in original plan; added because compose introduced a separate `migrate` service whose lifecycle vs the app warranted naming the alternatives)*
 - Update `HLD.md`: add the local-dev container topology
 - Update `LLD.md`: container internals (entrypoint, working dir, non-root UID, env-var contract, healthcheck)
 

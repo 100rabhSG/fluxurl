@@ -17,8 +17,8 @@ Learning project to build depth in Python/FastAPI, Docker, AWS (EC2, ECR, IAM), 
 ## How it works
 
 1. `POST /shorten` with a long URL → returns a short code
-2. `GET /{short_code}` → 301 redirect to the original URL
-3. Click analytics track each redirect
+2. `GET /{short_code}` → 302 redirect to the original URL
+3. Click analytics track each redirect *(Phase 6 — not yet implemented)*
 
 ## Docs
 
