@@ -16,5 +16,26 @@ services:
       timeout: 3s
       retries: 5
 
+  migrate:
+    build: .
+    container_name: fluxurl-migrate
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fluxurl:fluxurl@db:5432/fluxurl
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build: .
+    container_name: fluxurl-app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fluxurl:fluxurl@db:5432/fluxurl
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
