@@ -8,8 +8,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     database_url: str = Field(
-        default="postgresql+asyncpg://fluxurl:fluxurl@localhost:5432/fluxurl",
-        description="Async SQLAlchemy URL for Postgres.",
+        ...,
+        description="Async SQLAlchemy URL for Postgres. Required — no default; boot fails if missing.",
     )
     base_url: str = Field(
         default="http://localhost:8000",
