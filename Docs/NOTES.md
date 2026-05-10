@@ -270,3 +270,18 @@ The four key concepts:
   "Resource": "arn:aws:s3:::my-photos/*"
 }
 ```
+
+### EC2 (Elastic Compute Cloud)
+EC2 is essentially Virtual Machine you rent by hour. Under the hood, EC2 instances are VM running on AWS's physical servers (called "hosts").
+
+**AMI (Amazon Machine Image):** This is the boot template for your instance, basically a snapshot of an operating system and preinstalled softwares. (Ubuntu, Amazon Linux, custom, etc.)
+
+**Instance type:** This is the hardware specs - how many vCPU, how much RAM, what kind of networking. (t3.micro, m5.large, c6i.4xlarge).
+
+**EBS (Elastic Block Store):** virtual hard drives that exist independently of the instance. The disk persists even if the instance is stopped. You can detach it from one instance and attach it to another instance.
+
+**Lifecycle states:**
+- Running - on, charged for compute.
+- Stopped - off, no compute charge, still pay for EBS disk.
+- Terminated - deleted, gone forever.
+- Reboot != stop/start (reboot stays on same host, stop/start may move it).
