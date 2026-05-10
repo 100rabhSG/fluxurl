@@ -285,3 +285,17 @@ EC2 is essentially Virtual Machine you rent by hour. Under the hood, EC2 instanc
 - Stopped - off, no compute charge, still pay for EBS disk.
 - Terminated - deleted, gone forever.
 - Reboot != stop/start (reboot stays on same host, stop/start may move it).
+
+### VPC and Networking
+VPC (Virtual Private Cloud) is your own private, isolated network inside AWS. Every EC2 instance, RDS database, Lambda function, etc lives inside a VPC. By default, nothing inside your VPC is reachable from the outside internet unless you explicitly allow it.
+
+**Subnets:** A VPC is divided into smaller chunks called subnet. Each subnet live in exactly one AZ.
+- Public subnet: resource here can have public IPs and can communicate with internet directly
+- Private subnet: no direct internet access, used for db, internal services, anything that shouldn't be reachable from outside.
+
+**Internet Gateway:** It is the virtual router attached to VPC that lets traffic flow between the VPC and the public internet. One per VPC. 
+Without an IGW, VPC has no path to internet at all.
+
+**Route table:** The rules that decide where traffic goes. Every subnet is associated with a route table. A subnet becomes "public" by having a route to IGW, "private" by not having one.
+
+**NAT Gateway:** Needed when a resource in your private subnet needs to connect to internet, but you don't want internet to be able to reach your resource. A NAT gateway sites in public subnet and let's private-subnet resources make outbound connection to internet, while blocking inbound connection.
