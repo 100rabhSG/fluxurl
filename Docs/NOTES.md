@@ -299,3 +299,13 @@ Without an IGW, VPC has no path to internet at all.
 **Route table:** The rules that decide where traffic goes. Every subnet is associated with a route table. A subnet becomes "public" by having a route to IGW, "private" by not having one.
 
 **NAT Gateway:** Needed when a resource in your private subnet needs to connect to internet, but you don't want internet to be able to reach your resource. A NAT gateway sites in public subnet and let's private-subnet resources make outbound connection to internet, while blocking inbound connection.
+
+### Security groups
+A security group is a virtual firewall attached to AWS resource that controls what network traffic is allowed in and out of that resource.
+
+The core rules:
+- **Default deny-inbound, default-allow outbound:** A newly created security group blocks all incoming traffic and allows all outgoing traffic. You add inbound rules to open specific ports.
+
+- **Stateful:** If you allow inbound traffic on port X, the response is automatically allowed back out. You need not to write rules for ourbound traffic.
+
+- **Rules are evaluated as union:** You can attach multiple security groups to one resource. The effective rules are the combination of all of them. If any rule across any attached group allows the traffic, it's allowed.
