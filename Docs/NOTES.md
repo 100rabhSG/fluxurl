@@ -247,3 +247,55 @@ This is the biggest thing that makes multistage worthwhile. The same docker file
 | Runtime | Build machine briefly (during `docker build`), then EC2 | ECR (pushed image), EC2 (local copy after pull) | The small image that gets pushed to ECR |
  
 The build machine is the *only* place that ever needs gcc, pip, or build headers. Those tools never leave the build machine — they're used during the builder stage and then *not copied* into the runtime stage. EC2 never sees them.
+
+## AWS Basics
+
+### IAM (Identity and Access Management)
+When you create an AWS account, you get a default user - _root user_ - which is like God-mode for that account. It has unrestricted access to everything in that account. Obviously we don't want a developer/script/service running around with God-mode access. So AWS needs a system that can answer **Who the user is (Authentication)** and **Are they allowed to do this? (Authorization)**. That system is IAM.
+
+The four key concepts:
+
+1. **Users:** It represent a person that needs to interact with AWS. A user has credentials - either password for AWS console, or access keys for CLI/SDK. Each user is a permanent identity living inside your AWS account.
+
+2. **Groups:** Groups are just convenience for managing users. Instead of giving same permissions to 20 devs, you create a "Developers" group, attach permissions there, and add all devs to that group. Groups are purely for organizing users.
+
+3. **Roles:** A role is an identity without permanent credentials. Instead it is temporary credentials.
+
+4. **Policies:** Policies are JSON docs (list of rules) that actually define what's allowed or denied. Policies are attached to users, roles, or groups - they don't do anything on their own. A simple policy looks like:
+
+``` json
+{
+  "Effect": "Allow",
+  "Action": "s3:GetObject",
+  "Resource": "arn:aws:s3:::my-photos/*"
+}
+```
+
+### EC2 (Elastic Compute Cloud)
+EC2 is essentially Virtual Machine you rent by hour. Under the hood, EC2 instances are VM running on AWS's physical servers (called "hosts").
+
+**AMI (Amazon Machine Image):** This is the boot template for your instance, basically a snapshot of an operating system and preinstalled softwares. (Ubuntu, Amazon Linux, custom, etc.)
+
+**Instance type:** This is the hardware specs - how many vCPU, how much RAM, what kind of networking. (t3.micro, m5.large, c6i.4xlarge).
+
+**EBS (Elastic Block Store):** virtual hard drives that exist independently of the instance. The disk persists even if the instance is stopped. You can detach it from one instance and attach it to another instance.
+
+**Lifecycle states:**
+- Running - on, charged for compute.
+- Stopped - off, no compute charge, still pay for EBS disk.
+- Terminated - deleted, gone forever.
+- Reboot != stop/start (reboot stays on same host, stop/start may move it).
+
+### VPC and Networking
+VPC (Virtual Private Cloud) is your own private, isolated network inside AWS. Every EC2 instance, RDS database, Lambda function, etc lives inside a VPC. By default, nothing inside your VPC is reachable from the outside internet unless you explicitly allow it.
+
+**Subnets:** A VPC is divided into smaller chunks called subnet. Each subnet live in exactly one AZ.
+- Public subnet: resource here can have public IPs and can communicate with internet directly
+- Private subnet: no direct internet access, used for db, internal services, anything that shouldn't be reachable from outside.
+
+**Internet Gateway:** It is the virtual router attached to VPC that lets traffic flow between the VPC and the public internet. One per VPC. 
+Without an IGW, VPC has no path to internet at all.
+
+**Route table:** The rules that decide where traffic goes. Every subnet is associated with a route table. A subnet becomes "public" by having a route to IGW, "private" by not having one.
+
+**NAT Gateway:** Needed when a resource in your private subnet needs to connect to internet, but you don't want internet to be able to reach your resource. A NAT gateway sites in public subnet and let's private-subnet resources make outbound connection to internet, while blocking inbound connection.
