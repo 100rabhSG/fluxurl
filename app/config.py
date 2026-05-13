@@ -12,8 +12,8 @@ class Settings(BaseSettings):
         description="Async SQLAlchemy URL for Postgres. Required — no default; boot fails if missing.",
     )
     base_url: str = Field(
-        default="http://localhost:8000",
-        description="Public base URL used to build short URLs in API responses.",
+        ...,
+        description="Public base URL used to build short URLs in API responses. Required — no default; boot fails if missing.",
     )
 
 
