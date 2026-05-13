@@ -126,7 +126,7 @@ class ShortenRequest(BaseModel):
 ```python
 class ShortenResponse(BaseModel):
     short_code: str   # "6qmtOsk"
-    short_url: str    # "http://localhost:8000/6qmtOsk"
+    short_url: str    # "http://3.109.34.168/6qmtOsk" (constructed from BASE_URL + short_code)
     long_url: str     # "https://example.com/..."
 ```
 
@@ -137,6 +137,8 @@ class ErrorResponse(BaseModel):
 ```
 
 **Boundary rule:** Raw ORM `Url` objects never leave the handler. The handler constructs a `ShortenResponse` from the fields it needs. This decouples the DB schema from the API contract — the model can change (add columns, rename internally) without breaking clients.
+
+The `short_url` is **constructed at response time**, not stored. The handler reads `BASE_URL` from settings and concatenates with `short_code`. This means the response shape adapts to wherever the service is deployed without any DB rewrite — at the cost of needing a correct `BASE_URL` in every environment (see §7.4).
 
 ---
 
@@ -191,21 +193,22 @@ The image declares a contract — the variables its process needs in its environ
 | Variable | Required? | Read by | Behavior if missing |
 |---|---|---|---|
 | `DATABASE_URL` | **Yes** | `app/config.py` (pydantic-settings) | Fail-fast on startup with a Pydantic validation error (no default) |
+| `BASE_URL` | Should be required | `app/config.py` (pydantic-settings) | Currently defaults silently to `http://localhost:8000`, which ships wrong behavior to prod. To be tightened to "no default, fail on startup" — see HLD §9. |
 
 **How the contract is satisfied per environment:**
 
 | Environment | Mechanism |
 |---|---|
 | Host uvicorn (Phase 1, dev) | `.env` file in the working dir — pydantic-settings auto-loads it via `SettingsConfigDict(env_file=".env")` |
-| Container via compose (Phase 2) | `.env` is excluded by `.dockerignore` and never enters the image. Compose's `environment:` block injects `DATABASE_URL` as an OS-level env var into the container; pydantic-settings reads `os.environ` |
+| Container via compose (Phase 2) | `.env` is excluded by `.dockerignore` and never enters the image. Compose's `environment:` block injects vars as OS-level env vars into the container; pydantic-settings reads `os.environ` |
 | EC2 / ECR (Phase 3+) | Same image; supplied by whatever runs the container on the box (compose-on-EC2, systemd, `docker run -e`) |
 
-The app code has no branch for "am I in a container?" — pydantic-settings reads from the environment regardless of how the value got there. The `.env` file is a host-only dev affordance, deliberately excluded from the image so secrets don't get baked in. Refusing to boot without `DATABASE_URL` is intentional: a wrong-but-present value silently connects to the wrong database; an absent one is loud.
+The app code has no branch for "am I in a container?" — pydantic-settings reads from the environment regardless of how the value got there. The `.env` file is a host-only dev affordance, deliberately excluded from the image so secrets don't get baked in. Refusing to boot without required env vars is intentional: a wrong-but-present value silently connects to the wrong database (or generates wrong short URLs); an absent one is loud.
 
 ### 7.5 Network surface
 
 - `EXPOSE 8000` is **documentation only**. It does not publish the port to the host — it is a hint to readers and tools about which port the process listens on.
-- The actual host-to-container mapping (`8000:8000`) is set in `docker-compose.yml`, not in the image. The image is unaware of how it will be reached.
+- The actual host-to-container mapping (`8000:8000` in dev, `80:8000` on EC2) is set in the compose file, not in the image. The image is unaware of how it will be reached.
 
 ### 7.6 Process model — one image, two commands
 
@@ -213,9 +216,111 @@ The image declares `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port
 
 This is what makes the HLD's "deployable unit = image" claim concrete: the image is a self-contained tool that can run *either* the web server or the migration runner. Compose decides which.
 
+---
+
 ## 8. On-host layout (EC2)
 
-*To be filled in Phase 3.*
+White-box view of what's on the EC2 instance and where. The black-box topology is in `HLD.md` §5.2.
+
+### 8.1 OS and runtime
+
+- **OS:** Ubuntu 22.04 LTS, default `ubuntu` user (UID 1000, member of `docker` group).
+- **Docker:** installed from Docker's official APT repository (not Ubuntu's stale `docker.io`). Currently Docker 29.x with Compose v5.x bundled as a plugin (`docker compose`, not the legacy `docker-compose` binary).
+- **No other application runtime on the host.** No system Python service, no nginx, no systemd unit wrapping containers (yet). The instance's sole job is to run Docker.
+
+### 8.2 Filesystem layout
+
+```
+/home/ubuntu/                       ← SSH default working dir
+├── docker-compose.prod.yml         ← scp'd from laptop; source of truth for what runs on this box
+└── (no source code, no Dockerfile) ← image is loaded into Docker's store, not unpacked here
+
+/var/lib/docker/                    ← Docker's data root (managed; don't poke directly)
+├── overlay2/                       ← image layers
+├── containers/                     ← per-container metadata + logs
+│   └── <id>/<id>-json.log          ← stdout/stderr captured here per container
+└── volumes/
+    └── ubuntu_pgdata/_data/        ← the named volume that holds Postgres data
+        └── PG_VERSION, base/, pg_wal/, ... (Postgres's actual data directory)
+
+/                                   ← root filesystem on the 8 GiB EBS gp3 root volume
+                                       (everything above lives on this single disk)
+```
+
+The compose file on `/home/ubuntu/docker-compose.prod.yml` is the only project-specific file directly visible on the host. Everything else lives inside Docker's data root.
+
+### 8.3 Image source
+
+- Phase 3 uses **locally-loaded images**, not registry pulls. `fluxurl:latest` is `docker save`'d on the laptop, scp'd as a tar, `docker load`'d on EC2.
+- The image then lives in `/var/lib/docker/overlay2/` like any other locally-built image — Docker doesn't distinguish loaded-from-tar from built-locally from pulled-from-registry. They're all images in the store.
+- Phase 4 replaces this with `docker compose pull` from ECR; the on-host layout below is otherwise unchanged.
+
+### 8.4 What runs and how
+
+The full container set is defined in `docker-compose.prod.yml`:
+
+| Service | Image | Restart | State |
+|---|---|---|---|
+| `db` | `postgres:16` (Docker Hub) | not yet configured | Up, healthy |
+| `migrate` | `fluxurl:latest` (locally loaded) | not yet configured | Exited (0) after migrations run |
+| `app` | `fluxurl:latest` (locally loaded) | not yet configured | Up |
+
+The compose project name is `ubuntu` (derived from the directory the compose file is invoked from), which is why the named volume appears as `ubuntu_pgdata` in `/var/lib/docker/volumes/`.
+
+**Bringing the stack up:**
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The `-f` flag is required because the prod file isn't named `docker-compose.yml`. The `-d` (detached) flag is required because anything else ties container lifetimes to the SSH session.
+
+**Recreate after env var changes:**
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --force-recreate
+```
+
+Compose doesn't pick up changes to `environment:` blocks on an already-running container — `--force-recreate` is needed.
+
+### 8.5 Persistence
+
+- The `pgdata` named volume is mounted by `docker-compose.prod.yml` and physically lives at `/var/lib/docker/volumes/ubuntu_pgdata/_data/`.
+- That path is on the EC2 instance's 8 GiB EBS gp3 root volume. EBS survives instance Stop/Start, so the data survives instance lifecycle events.
+- **No backups.** Volume corruption, accidental deletion (`docker volume rm`), or EBS failure means total data loss with no recovery path. This is the most consequential v1 scope cut. Phase 7 (RDS) introduces automated backups.
+
+### 8.6 Network
+
+- Only ports 22 (SSH) and 80 (HTTP) are reachable from the internet, enforced by the EC2 security group.
+- Inside the box, the compose bridge network gives each container an internal IP and DNS name. `app` reaches `db` at the hostname `db`, port 5432.
+- **Postgres has no host port mapping in production.** This is intentional and different from local-dev — preventing port 5432 from being bound on the host, regardless of what the security group allows.
+- The app container's port 8000 is mapped to host port 80, which is then exposed via the security group rule for HTTP.
+
+### 8.7 Logs
+
+- Each container's stdout/stderr is captured by Docker's default `json-file` log driver and written to `/var/lib/docker/containers/<id>/<id>-json.log`.
+- Read logs via `docker compose -f docker-compose.prod.yml logs -f app` (or any specific service). The `-f` follows in real time.
+- **No log rotation configured.** Logs grow unbounded; on a t3.micro with 8 GiB EBS, this could fill the disk on a busy day. Acceptable at v1 traffic; revisit in Phase 8 or Phase 12.
+- Logs do not currently flow to CloudWatch. Phase 8 introduces structured logging and CloudWatch integration.
+
+### 8.8 Lifecycle behavior
+
+| Event | Containers | Public IP | Data |
+|---|---|---|---|
+| `sudo reboot` from inside | Stop, do not auto-restart | Unchanged | Survives |
+| Console "Reboot instance" | Stop, do not auto-restart | Unchanged | Survives |
+| Console "Stop" then "Start" | Stop, do not auto-restart | Unchanged (Elastic IP attached) | Survives |
+| Console "Terminate" | Gone | Elastic IP detaches (still allocated to account) | Gone (EBS released unless preserved) |
+
+The "do not auto-restart" column reflects current state. Once `restart: unless-stopped` is added to compose (planned closing step of Phase 3), the first three rows shift to "Auto-restart on Docker daemon start."
+
+### 8.9 Operator access
+
+- SSH from `<my IP>` only — security group enforces this at the network layer.
+- The `ubuntu` user has `sudo` without password (Ubuntu AMI default) and is a member of the `docker` group, so `docker` commands run without `sudo`.
+- The SSH key (`fluxurl-key.pem`) is stored in the operator's password manager and is the only credential for accessing the instance. Losing it means rebuilding the instance.
+
+---
 
 ## 9. ECR auth flow
 
