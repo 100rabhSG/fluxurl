@@ -309,3 +309,17 @@ The core rules:
 - **Stateful:** If you allow inbound traffic on port X, the response is automatically allowed back out. You need not to write rules for ourbound traffic.
 
 - **Rules are evaluated as union:** You can attach multiple security groups to one resource. The effective rules are the combination of all of them. If any rule across any attached group allows the traffic, it's allowed.
+
+### AWS regions
+Any resource in one region doesn't exist in other regions. AWS resources are region-scoped, EC2 instances, security groups, Elastic IPs, snapshots, almost everything. A resource you created in ap-south-1 doesn't exist in us-east-1. If you can't find a resource you just created, check the region selector first.
+
+## Deployment
+
+### Q. Why do we need two separate docker-compose.yml files?
+
+
+### Tags to docker images - two tags pointing to same image in our case
+
+
+### EC2 reboot vs stop/start
+The public IP of our EC2 instance doesn't change on a reboot, but if we stop/start then resources are released during stop and new resources are allocated at start. This may change our public IP. Change in public IP will also change our Base url which in turn invalidate all our previously generated short links because all of those depend on our public IP. To address this we can use elastic IPs.
