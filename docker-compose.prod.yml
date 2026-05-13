@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:16
     container_name: fluxurl-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: fluxurl
       POSTGRES_PASSWORD: fluxurl
@@ -27,6 +28,7 @@ services:
   app:
     image: fluxurl:latest
     container_name: fluxurl-app
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://fluxurl:fluxurl@db:5432/fluxurl
       BASE_URL: http://3.109.34.168

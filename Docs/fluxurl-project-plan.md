@@ -174,14 +174,14 @@ Get your container running on AWS, by hand. No automation yet — that's the poi
 
 **Build:**
 
-- [ ] Launch EC2 t2.micro / t3.micro (Ubuntu 22.04 LTS), free tier
-- [ ] Key pair created, `.pem` saved securely
-- [ ] Security group: SSH (22) from your IP only, HTTP (80) from anywhere
-- [ ] SSH in, install Docker on the box
-- [ ] Manually copy your image to EC2 (using `docker save` + `scp` + `docker load`, or build directly on the box)
-- [ ] Run app container + postgres container on EC2 (a small `docker-compose.yml` on the server is fine)
-- [ ] App listens on port 80 (or map 80 → 8000)
-- [ ] Hit your EC2 public IP from your browser — works
+- [x] Launch EC2 t2.micro / t3.micro (Ubuntu 22.04 LTS), free tier
+- [x] Key pair created, `.pem` saved securely
+- [x] Security group: SSH (22) from your IP only, HTTP (80) from anywhere
+- [x] SSH in, install Docker on the box
+- [x] Manually copy your image to EC2 (using `docker save` + `scp` + `docker load`, or build directly on the box)
+- [x] Run app container + postgres container on EC2 (a small `docker-compose.yml` on the server is fine)
+- [x] App listens on port 80 (or map 80 → 8000)
+- [x] Hit your EC2 public IP from your browser — works
 
 **Checkpoint:** Your URL shortener is live on the internet at `http://<ec2-public-ip>/`. You can shorten a URL and follow the redirect.
 
