@@ -310,6 +310,9 @@ The core rules:
 
 - **Rules are evaluated as union:** You can attach multiple security groups to one resource. The effective rules are the combination of all of them. If any rule across any attached group allows the traffic, it's allowed.
 
+- **Why SSH from `My IP` only?:** SSH is administrative, it gives you shell access to the machine. Hence we restrict the access to smallest IP set possible i.e. my own IP.
+The cost is that the rule needs to be updated whenever my IP changes.
+
 ### AWS regions
 Any resource in one region doesn't exist in other regions. AWS resources are region-scoped, EC2 instances, security groups, Elastic IPs, snapshots, almost everything. A resource you created in ap-south-1 doesn't exist in us-east-1. If you can't find a resource you just created, check the region selector first.
 
@@ -323,3 +326,6 @@ Any resource in one region doesn't exist in other regions. AWS resources are reg
 
 ### EC2 reboot vs stop/start
 The public IP of our EC2 instance doesn't change on a reboot, but if we stop/start then resources are released during stop and new resources are allocated at start. This may change our public IP. Change in public IP will also change our Base url which in turn invalidate all our previously generated short links because all of those depend on our public IP. To address this we can use elastic IPs.
+
+### Why we run `docker compose up` in detached mode?
+We run docker compose in detached mode so the container survive our SSH disconnect. Without detached mode (`-d`), the containers will be tied to foreground process. Close SSH -> you loose the app.
