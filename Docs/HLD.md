@@ -2,7 +2,7 @@
 
 > Living document. Updated as each phase changes the architecture. See `Docs/decisions/` for the *why* behind each choice.
 >
-> **Status:** v1 design — Phases 1–2 complete. Phases 3–5 not yet built.
+> **Status:** Phase 3 complete. App deployed manually to AWS EC2 with Elastic IP. ECR (Phase 4) and CI/CD (Phase 5) not yet wired up.
 
 ---
 
@@ -37,6 +37,7 @@ Fluxurl is a public URL shortener. Anyone on the internet can submit a long URL 
 - **Durability:** no formal application-level target. Data lives on a single EBS volume with no backups. EBS itself provides ~99.8–99.9% annual durability. A volume failure or accidental deletion is unrecoverable in v1. Phase 7 (RDS migration) introduces automated backups.
 - **Consistency:** v1 uses a single Postgres instance, so distributed consistency models (CAP theorem, eventual vs. strong consistency) don't meaningfully apply — there's only one node, so there's nothing to be inconsistent with. Postgres provides ACID transaction semantics. This becomes a real design question in Phase 7+ if read replicas are introduced and in Phase 10 when a cache layer is added.
 
+---
 
 ## 2. Components
 
@@ -46,12 +47,18 @@ The pieces that make up the system and what each one is responsible for.
 
 - **API service** — Python 3.12 + FastAPI app, async, single process. Handles `POST /shorten` and `GET /{short_code}`. Runs as a Docker container.
 - **Database** — single Postgres 16 instance. Stores URL mappings. Single source of truth. Runs as a Docker container alongside the API.
+- **Compute host** — AWS EC2 t3.micro running Ubuntu 22.04 LTS in `ap-south-1`. Hosts both containers.
+- **Public address** — AWS Elastic IP (`3.109.34.168`), pinned to the EC2 instance. Survives instance Stop/Start; the contract Fluxurl makes with short-URL holders is that this address doesn't change.
 
 **Deferred to later phases:**
 
 - **Container registry** — AWS ECR (Phase 4)
 - **CI/CD pipeline** — GitHub Actions (Phase 5)
 - **Managed database** — AWS RDS (Phase 7)
+- **Reverse proxy + TLS** — Nginx + Let's Encrypt (Phase 9)
+- **Custom domain** — Phase 9
+- **Cache layer** — Redis (Phase 10)
+- **Infrastructure as code** — Terraform (Phase 11)
 
 ---
 
@@ -82,7 +89,7 @@ Happy paths only. Error and edge-case handling decided in Phase 1.
 3. Generate 7-char random base62 code using `secrets` (cryptographically secure RNG).
 4. Insert `(short_code, long_url)` into `urls` table.
 5. On unique-constraint collision: regenerate code, retry. Max 5 retries before returning 500.
-6. Return the full short URL in the response body.
+6. Return the full short URL in the response body, constructed from `BASE_URL` env var + `short_code`.
 
 **`GET /{short_code}`:**
 
@@ -95,8 +102,6 @@ Happy paths only. Error and edge-case handling decided in Phase 1.
 ## 5. Deployment topology
 
 Where each component runs, how they talk, network boundaries.
-
-*v1 target: single EC2 instance running the API and Postgres as Docker containers, no load balancer, no reverse proxy. Built up incrementally — local dev below, EC2 in Phase 3, ECR in Phase 4.*
 
 ### 5.1 Local-dev topology (Phase 2)
 
@@ -142,27 +147,96 @@ The rationale for the separate `migrate` service is in [ADR 0010](decisions/0010
 
 **What is the deployable unit?**
 
-The **image**, not the source code or the compose file. `app` and `migrate` use the *same locally-built image*, differentiated only by their `command`. `db` uses the upstream `postgres:16` image from Docker Hub. Phase 4 pushes the locally-built image to ECR; Phase 3 runs that same image on EC2. The compose file is environment-specific glue.
+The **image**, not the source code or the compose file. `app` and `migrate` use the *same locally-built image*, differentiated only by their `command`. `db` uses the upstream `postgres:16` image from Docker Hub. The compose file is environment-specific glue.
+
+### 5.2 EC2 topology (Phase 3)
+
+The image built locally is shipped to a single EC2 instance and runs there under a near-identical compose layout. The differences from local-dev are deliberate and small.
+
+```
+Internet
+   │
+   ▼  3.109.34.168 (Elastic IP)
+┌────────────── AWS ap-south-1 ──────────────┐
+│                                            │
+│   Security group "fluxurl-sg"              │
+│     22/tcp from <my IP>     (SSH)          │
+│     80/tcp from 0.0.0.0/0   (HTTP)         │
+│                                            │
+│   ┌──── EC2 t3.micro (Ubuntu 22.04) ────┐  │
+│   │                                     │  │
+│   │   port 80 ──► app (container)       │  │
+│   │              :8000 inside           │  │
+│   │                                     │  │
+│   │   ┌─── compose bridge network ──┐   │  │
+│   │   │   migrate ──► app ──► db    │   │  │
+│   │   │   (one-shot)         :5432  │   │  │
+│   │   │                       │     │   │  │
+│   │   │              pgdata (named volume) │
+│   │   │                       │     │   │  │
+│   │   └───────────────────────┼─────┘   │  │
+│   │                           ▼         │  │
+│   │              EBS gp3 root volume    │  │
+│   │              (8 GiB, persists       │  │
+│   │               across Stop/Start)    │  │
+│   └─────────────────────────────────────┘  │
+│                                            │
+└────────────────────────────────────────────┘
+```
+
+**Key differences from local-dev:**
+
+- **App is published on host port 80**, not 8000. Users hit `http://3.109.34.168/<code>` without specifying a port. Inside the container the app still listens on 8000; only the host-side mapping changes.
+- **Postgres is NOT port-mapped on the host.** Inter-container communication via the compose network is sufficient; nothing exposes 5432 to the internet. Defense in depth — even if the security group is misconfigured, port 5432 isn't bound on the host.
+- **Image source is the locally-loaded `fluxurl:latest`**, not a `build: .` directive. The image is built on a developer's laptop, transferred via `docker save` / `scp` / `docker load`, then referenced by tag. The compose file used on EC2 (`docker-compose.prod.yml`) is the version that uses `image: fluxurl:latest`.
+- **`BASE_URL` is set explicitly** to `http://3.109.34.168` so generated short URLs reference the public Elastic IP, not the container's internal hostname.
+
+**Persistence:**
+
+- The `pgdata` named volume lives on the EC2 instance's 8 GiB EBS gp3 root volume. EBS survives instance Stop/Start.
+- No backups. EBS volume loss is unrecoverable. Phase 7 (RDS) introduces automated backups.
+
+**Public address:**
+
+- The Elastic IP (`3.109.34.168`) is allocated from AWS's pool and associated with the instance. It does *not* change on Stop/Start, which is the property that makes short URLs durable.
+- The previous auto-assigned IPs are gone — every short URL generated before the Elastic IP was attached is now broken (no impact in practice; only test URLs were created in that window).
+
+**Deployment process (Phase 3, manual):**
+
+The current deployment flow is intentionally manual to ground the mental model before automating it. End-to-end:
+
+1. Build the image locally: `docker build -t fluxurl:latest .`
+2. Save to tar: `docker save fluxurl:latest -o fluxurl.tar`
+3. scp tar and `docker-compose.prod.yml` to EC2
+4. SSH in, `docker load -i fluxurl.tar`
+5. `docker compose -f docker-compose.prod.yml up -d --force-recreate`
+
+Phase 4 replaces steps 2–4 with a registry pull from ECR.
 
 **What is *not* in this topology yet, and where it shows up:**
 
-- No reverse proxy (Nginx) — Phase 9.
-- No external image registry — image is built locally; ECR arrives in Phase 4.
-- No managed database — `postgres:16` runs as a sibling container; RDS replaces it in Phase 7.
-- No TLS / custom domain — Phase 9.
-- No process supervisor — `docker compose up` is interactive; on EC2 in Phase 3 we'll need `--restart=always` or systemd to keep containers alive across reboots.
+- **No reverse proxy (Nginx)** — Phase 9
+- **No external image registry** — image is hand-loaded; ECR arrives in Phase 4
+- **No IAM instance role** — EC2 box has no AWS credentials; Phase 4 adds an instance role for ECR pulls
+- **No managed database** — `postgres:16` runs as a sibling container; RDS replaces it in Phase 7
+- **No TLS / custom domain** — Phase 9
+- **No restart policy** — containers do not auto-start after instance reboot. Manual `docker compose up -d` required. Resolved at the end of Phase 3 via `restart: unless-stopped` in compose.
+- **No automated deploys** — every code change requires the manual flow above; Phase 5 (GitHub Actions) automates it
 
 ---
 
 ## 6. Failure modes
 
-What can break, what happens when it does, what's acceptable for v1. First pass — expanded as new failure modes are discovered during build.
+What can break, what happens when it does, what's acceptable for v1. Updated as new failure modes are discovered during build.
 
 | Failure | What happens | v1 acceptable? |
 |---|---|---|
 | Postgres container down | All requests return 5xx | Yes — manual recovery, minutes of downtime |
-| EC2 reboot | Service down until containers restart | Yes — fits inside the 99% availability budget |
+| EC2 reboot | Containers don't auto-start; service down until manual `docker compose up -d`. Public IP unchanged. | Acceptable only until restart policy is applied; planned fix at end of Phase 3 |
+| EC2 Stop/Start | Same as reboot for containers. Public IP stays (Elastic IP attached). | Same as above |
+| Elastic IP released or detached | Every existing short URL silently breaks. No internal recovery path. | Operational discipline — release only on permanent shutdown |
 | EBS volume corruption / loss | Permanent data loss, no recovery path | Yes — explicitly accepted, Phase 7 (RDS) fixes |
+| Home IP changes (developer) | SSH stops working until security group rule updated to new IP | Yes — 30-second console fix |
 | Code collision retries exhausted | 500 to client | Yes — vanishingly rare at v1 scale (~6 in 100k inserts at peak projected scale) |
 | Deploy mid-request | In-flight request fails | Yes — client retries |
 
@@ -207,19 +281,27 @@ Deliberately deferred. Each cut is intentional, not forgotten.
 **Infrastructure cut:**
 
 - **Backups** — no automated or manual backup strategy in v1. Most consequential cut; called out explicitly so it isn't missed.
+- **Custom domain / TLS** — service is reached by raw Elastic IP. Phase 9 introduces a domain + Let's Encrypt.
+- **Registry-based image transfer** — currently `docker save` / `scp` / `docker load`. Phase 4 replaces with ECR.
+- **Automated deployment** — manual SSH-and-compose flow. Phase 5 introduces GitHub Actions CI/CD.
 - Kubernetes / ECS / Fargate / Lambda
 - CloudFront / Route 53 / API Gateway
 - Redis, Celery
 - Multi-environment (single env only)
-- Custom domain / TLS (Phase 9)
 
 ---
 
-## 9. Open questions (resolved)
+## 9. Open questions and known limitations
 
-All Phase 1 questions have been resolved:
+**Resolved during Phases 1–3:**
 
 - ~~**Primary key for `urls`**~~ → `short_code` as natural PK. See [ADR 0005](decisions/0005-primary-key-for-urls-table.md).
 - ~~**URL validation strictness**~~ → Pydantic `HttpUrl` validates format (requires scheme + host). Accepts `http` and `https`; rejects relative URLs and malformed schemes.
 - ~~**Max length of `long_url`**~~ → Pydantic `HttpUrl` enforces 2083-char limit (browser standard). No additional app-level check.
 - ~~**404 behavior**~~ → Plain JSON `{"detail": "short code not found"}`. Same message for invalid shape and valid-but-missing (prevents information leakage).
+
+**Outstanding (to resolve at end of Phase 3 or in later phases):**
+
+- **Container restart policy** — `restart: unless-stopped` to be applied to all services in `docker-compose.prod.yml` so containers survive EC2 reboot. Closing step of Phase 3.
+- **`BASE_URL` default behavior** — currently defaults to `http://localhost:8000` if env var is missing, which silently ships wrong behavior to production. Should be made required (no default, fail loudly at startup). Phase 3 follow-up.
+- **Reserved short codes** — generator does not currently exclude codes that collide with static routes (`shorten`, `docs`, `redoc`, `openapi.json`, `healthz`). Probability of collision is vanishingly small (1 in 62^7 per generation), but the principle is unprotected. Phase 5 follow-up before automation amplifies the risk.
