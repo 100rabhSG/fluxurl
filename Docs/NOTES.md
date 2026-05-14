@@ -329,3 +329,115 @@ The public IP of our EC2 instance doesn't change on a reboot, but if we stop/sta
 
 ### Why we run `docker compose up` in detached mode?
 We run docker compose in detached mode so the container survive our SSH disconnect. Without detached mode (`-d`), the containers will be tied to foreground process. Close SSH -> you loose the app.
+
+
+## Container Registry
+A container registry is an HTTP server that stores and serves Docker images. You send HTTP request, it responds with image data.
+
+### What actually a docker image is?
+A docker image is not one file, it's a manifest + a set of layers.
+
+```txt
+Manifest (a JSON file describing the image)
+├── Config (another JSON file with env vars, entrypoint, etc.)
+└── Layers (zero or more tar files, each containing files for one Dockerfile step)
+    ├── Layer 1: sha256:abc123... (base OS, ~50 MB)
+    ├── Layer 2: sha256:def456... (Python install, ~30 MB)
+    ├── Layer 3: sha256:789xyz... (dependencies, ~70 MB)
+    ├── Layer 4: sha256:...      (your code, ~5 MB)
+    └── Layer 5: sha256:...      (a couple of file copies, ~50 KB)
+```
+
+Each layer is a content addressed blob - its SHA256 hash is it's filename.
+
+The manifest describers which layers, in what order, make up the image. It's how Docker knows _"to assemble fluxurl:latest, I need these 5 layers, applied in this order"_.
+
+### What happens when you run `docker push fluxurl:latest`?
+When you run `docker push fluxurl:latest`:
+```txt
+1. Docker CLI computes the manifest for fluxurl:latest
+2. CLI asks the registry: "do you have layer sha256:abc123?"
+   - Registry: yes → skip
+   - Registry: no → CLI uploads it
+3. Repeat for each layer
+4. CLI uploads the manifest, tagged as 'latest'
+```
+
+If you push the same image twice, step 2 always returns "yes" for every layer. The second push is essentially free — a few API calls, no data transferred.
+
+If you push a slightly-modified image (say, you changed one line of Python code, so layer 4 has a different hash), only layer 4 transfers. Layers 1–3 are unchanged; the registry already has them.
+
+- **`docker pull` is `docker push` in reverse**
+
+### What is Content-addressed storage
+In traditional file storage system, when you store a file, you give it a name and a location. The address tells the filesystem where the file is, not what it is.
+
+In content-addressed storage, you don't give file a name. Instead, it computed hash is its identity. For this reason the files in content-addressed storage are immutable.
+
+- Two files with identical content have the same hash → stored once, automatic deduplication.
+- You cannot modify a file in place. Changing any byte changes the hash → it becomes a different file with a different address. The original is unchanged. Immutability for free.
+- The address is a function of the content. You cannot have "the same address with different content over time." Stable references.
+- Anyone can verify integrity: download the file, hash it, compare to the address you used. Built-in integrity checking.
+
+### Why layers at all? Why not just store images as monolithic tar files?
+Layers map to dockerfile steps, and most of the steps don't change between builds.
+
+Consider fluxurl dockerfile for example:
+```txt
+FROM python:3.12-slim          # Layer 1: ~50 MB, almost never changes
+COPY requirements.txt /tmp/    # Layer 2: changes when deps change
+RUN pip install -r /tmp/req... # Layer 3: ~70 MB, changes when deps change
+COPY app /app/                 # Layer 4: changes on every code edit
+```
+If we just change one line in our app, layers 1, 2, 3 are identical to previous build. Only layer 4 is new. Builds are fast (because of docker's build cache), and pushes are fast (because only layer 4 need to be uploaded).
+
+If the image was monolith tar file, every code change would mean uploading the whole image every time. Layers reduce that to uploading only changed layers.
+
+### What are manifests?
+Manifest is like recipe - the list of which layers, in what order. More formally, manifest is metadata that describes a container image, what layers it contains, what configuration it uses, and sometimes platform variants too.
+
+A manifest typically contains - Image name/tag, Digest (immutable hash), Layers digest, size of layers, OS/architecture, config object reference.
+
+## AWS Authentication
+
+### Building blocks
+1. **Principal:** A principal is 'an identity that can make request to AWS'. There are three kinds of principal - root user, IAM user, IAM role.
+Think of principal as "a hat". The hat doesn't move on its own. something has to be wearing the hat to do anything. Different hats have different powers.
+
+2. **Credentials:** Credentials are how principal proves it's the principal it claims to be when making a request. There are two kinds of credentials:
+
+| Feature            | Long-Lived Credentials            | Temporary Credentials                             |
+| ------------------ | --------------------------------- | ------------------------------------------------- |
+| Expiration         | Do not expire automatically       | Expire after a short time                         |
+| Components         | Access Key ID + Secret Access Key | Access Key ID + Secret Access Key + Session Token |
+| Issued By          | IAM User                          | AWS STS                                           |
+| Security           | Less secure if leaked             | Safer because they expire                         |
+| Rotation           | Manual rotation needed            | Automatically rotated in many cases               |
+| Common Use         | Users, external apps, scripts     | IAM Roles, EC2, Lambda                            |
+| AWS Recommendation | Avoid when possible               | Preferred by AWS                                  |
+
+3. **Policies:** A policy is a JSON document that says what's allowed or denied.
+Policies are heart of authorization. They specify three things:
+  - Effect: Allow or deny
+  - Action: What API calls
+  - Resources: Which AWS resources
+  - Some policies also include Condition, Principal.
+
+There are two types of Policies:
+
+i) Identity based: attached to a principal (user, role, or group). They answer "What is this principal allowed to do?".
+ii) Resources based: attached to a resource (S3 bucket, ECR repo). They answer "Who is allowed to do what to this resource?".
+
+### The mental model
+```txt
+A "principal" (a user, a role, or a service) makes a request
+        ↓
+The request includes "credentials" (access key + secret key, or temporary session token)
+        ↓
+AWS receives the request, looks up the principal
+        ↓
+AWS checks the policies attached to the principal: "is this principal allowed to do this action on this resource?"
+        ↓
+Allow → request proceeds
+Deny → 403
+```

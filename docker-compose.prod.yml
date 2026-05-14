@@ -20,6 +20,7 @@ services:
     container_name: fluxurl-migrate
     environment:
       DATABASE_URL: postgresql+asyncpg://fluxurl:fluxurl@db:5432/fluxurl
+      BASE_URL: http://3.109.34.168
     command: ["alembic", "upgrade", "head"]
     depends_on:
       db:
