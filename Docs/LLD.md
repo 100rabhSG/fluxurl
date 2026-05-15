@@ -193,7 +193,7 @@ The image declares a contract — the variables its process needs in its environ
 | Variable | Required? | Read by | Behavior if missing |
 |---|---|---|---|
 | `DATABASE_URL` | **Yes** | `app/config.py` (pydantic-settings) | Fail-fast on startup with a Pydantic validation error (no default) |
-| `BASE_URL` | Should be required | `app/config.py` (pydantic-settings) | Currently defaults silently to `http://localhost:8000`, which ships wrong behavior to prod. To be tightened to "no default, fail on startup" — see HLD §9. |
+| `BASE_URL` | **Yes** | `app/config.py` (pydantic-settings) | Fail-fast on startup with a Pydantic validation error (no default) |
 
 **How the contract is satisfied per environment:**
 
@@ -204,6 +204,8 @@ The image declares a contract — the variables its process needs in its environ
 | EC2 / ECR (Phase 3+) | Same image; supplied by whatever runs the container on the box (compose-on-EC2, systemd, `docker run -e`) |
 
 The app code has no branch for "am I in a container?" — pydantic-settings reads from the environment regardless of how the value got there. The `.env` file is a host-only dev affordance, deliberately excluded from the image so secrets don't get baked in. Refusing to boot without required env vars is intentional: a wrong-but-present value silently connects to the wrong database (or generates wrong short URLs); an absent one is loud.
+
+**Service-level consequence:** because `alembic/env.py` imports `get_settings()`, the `migrate` service needs *every* required env var, not just `DATABASE_URL`. This is why `BASE_URL` is set on the `migrate` service in `docker-compose.prod.yml` even though Alembic itself never uses it. A planned cleanup (HLD §9) is to have `alembic/env.py` read `DATABASE_URL` directly from `os.environ` instead of going through the full `Settings` class — that would decouple migrations from the app's full config surface.
 
 ### 7.5 Network surface
 
@@ -226,17 +228,18 @@ White-box view of what's on the EC2 instance and where. The black-box topology i
 
 - **OS:** Ubuntu 22.04 LTS, default `ubuntu` user (UID 1000, member of `docker` group).
 - **Docker:** installed from Docker's official APT repository (not Ubuntu's stale `docker.io`). Currently Docker 29.x with Compose v5.x bundled as a plugin (`docker compose`, not the legacy `docker-compose` binary).
-- **No other application runtime on the host.** No system Python service, no nginx, no systemd unit wrapping containers (yet). The instance's sole job is to run Docker.
+- **AWS CLI:** installed from Ubuntu's APT repository (`awscli` package). Required for `aws ecr get-login-password` during deploys. No `~/.aws/credentials` file — the CLI uses the instance role's credentials automatically via the metadata service.
+- **No other application runtime on the host.** No system Python service, no nginx, no systemd unit wrapping containers. The instance's sole job is to run Docker.
 
 ### 8.2 Filesystem layout
 
 ```
 /home/ubuntu/                       ← SSH default working dir
 ├── docker-compose.prod.yml         ← scp'd from laptop; source of truth for what runs on this box
-└── (no source code, no Dockerfile) ← image is loaded into Docker's store, not unpacked here
+└── (no source code, no Dockerfile) ← image lives in Docker's store, not unpacked here
 
 /var/lib/docker/                    ← Docker's data root (managed; don't poke directly)
-├── overlay2/                       ← image layers
+├── overlay2/                       ← image layers (incl. ECR-pulled images)
 ├── containers/                     ← per-container metadata + logs
 │   └── <id>/<id>-json.log          ← stdout/stderr captured here per container
 └── volumes/
@@ -251,9 +254,9 @@ The compose file on `/home/ubuntu/docker-compose.prod.yml` is the only project-s
 
 ### 8.3 Image source
 
-- Phase 3 uses **locally-loaded images**, not registry pulls. `fluxurl:latest` is `docker save`'d on the laptop, scp'd as a tar, `docker load`'d on EC2.
-- The image then lives in `/var/lib/docker/overlay2/` like any other locally-built image — Docker doesn't distinguish loaded-from-tar from built-locally from pulled-from-registry. They're all images in the store.
-- Phase 4 replaces this with `docker compose pull` from ECR; the on-host layout below is otherwise unchanged.
+- **Phase 4 onward:** the image is pulled from ECR at `546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl:latest`. `docker-compose.prod.yml` references this full URI directly; compose triggers the pull on `up` if the local store doesn't have the requested digest, or if `docker compose pull` is invoked explicitly.
+- **Docker's storage model is identical regardless of source.** A pulled-from-ECR image lives in `/var/lib/docker/overlay2/` the same way a `docker build`-built image does. Docker doesn't distinguish source — only content. Two routes can land at the same image (and de-duplicate to the same layers) by manifest digest.
+- **The ECR pull is authenticated**, unlike Docker Hub pulls of public images. The host must complete `docker login` to ECR before `docker pull` works. Auth is covered in §9.
 
 ### 8.4 What runs and how
 
@@ -261,11 +264,16 @@ The full container set is defined in `docker-compose.prod.yml`:
 
 | Service | Image | Restart | State |
 |---|---|---|---|
-| `db` | `postgres:16` (Docker Hub) | not yet configured | Up, healthy |
-| `migrate` | `fluxurl:latest` (locally loaded) | not yet configured | Exited (0) after migrations run |
-| `app` | `fluxurl:latest` (locally loaded) | not yet configured | Up |
+| `db` | `postgres:16` (Docker Hub) | `unless-stopped` | Up, healthy |
+| `migrate` | `<ecr-uri>/fluxurl:latest` | none | Exited (0) after migrations run |
+| `app` | `<ecr-uri>/fluxurl:latest` | `unless-stopped` | Up |
 
 The compose project name is `ubuntu` (derived from the directory the compose file is invoked from), which is why the named volume appears as `ubuntu_pgdata` in `/var/lib/docker/volumes/`.
+
+**Restart policy reasoning:**
+- `db` and `app` have `restart: unless-stopped` so they auto-recover from crashes and from EC2 reboot/Stop/Start. Docker daemon starts them when the OS comes up; if they crash, Docker restarts them with exponential backoff.
+- `migrate` deliberately has *no* restart policy. It's a one-shot service that exits 0 after migrations complete. Attaching a restart policy would cause Docker to re-run it indefinitely.
+- `unless-stopped` (not `always`) — the policy respects manual `docker compose down`, so operator-initiated stops aren't fought by Docker.
 
 **Bringing the stack up:**
 
@@ -275,13 +283,13 @@ docker compose -f docker-compose.prod.yml up -d
 
 The `-f` flag is required because the prod file isn't named `docker-compose.yml`. The `-d` (detached) flag is required because anything else ties container lifetimes to the SSH session.
 
-**Recreate after env var changes:**
+**Recreate after env var or image changes:**
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --force-recreate
 ```
 
-Compose doesn't pick up changes to `environment:` blocks on an already-running container — `--force-recreate` is needed.
+Compose doesn't pick up changes to `environment:` blocks on an already-running container, and won't always re-pull a newer image with the same tag — `--force-recreate` ensures containers are torn down and rebuilt from current config and pulled images.
 
 ### 8.5 Persistence
 
@@ -295,6 +303,7 @@ Compose doesn't pick up changes to `environment:` blocks on an already-running c
 - Inside the box, the compose bridge network gives each container an internal IP and DNS name. `app` reaches `db` at the hostname `db`, port 5432.
 - **Postgres has no host port mapping in production.** This is intentional and different from local-dev — preventing port 5432 from being bound on the host, regardless of what the security group allows.
 - The app container's port 8000 is mapped to host port 80, which is then exposed via the security group rule for HTTP.
+- **Outbound HTTPS** is unrestricted by default. The instance reaches `*.amazonaws.com` (for ECR pulls and the metadata service is link-local) and `registry-1.docker.io` (for Postgres image pulls).
 
 ### 8.7 Logs
 
@@ -307,12 +316,14 @@ Compose doesn't pick up changes to `environment:` blocks on an already-running c
 
 | Event | Containers | Public IP | Data |
 |---|---|---|---|
-| `sudo reboot` from inside | Stop, do not auto-restart | Unchanged | Survives |
-| Console "Reboot instance" | Stop, do not auto-restart | Unchanged | Survives |
-| Console "Stop" then "Start" | Stop, do not auto-restart | Unchanged (Elastic IP attached) | Survives |
+| `sudo reboot` from inside | Auto-restart (Docker daemon starts on boot; `restart: unless-stopped` brings up app+db) | Unchanged | Survives |
+| Console "Reboot instance" | Auto-restart, same as above | Unchanged | Survives |
+| Console "Stop" then "Start" | Auto-restart, same as above | Unchanged (Elastic IP attached) | Survives |
 | Console "Terminate" | Gone | Elastic IP detaches (still allocated to account) | Gone (EBS released unless preserved) |
+| App container crashes | Auto-restart by Docker with exponential backoff | Unchanged | Survives |
+| `docker compose down` | Stop, do **not** auto-restart (operator intent respected) | Unchanged | Survives |
 
-The "do not auto-restart" column reflects current state. Once `restart: unless-stopped` is added to compose (planned closing step of Phase 3), the first three rows shift to "Auto-restart on Docker daemon start."
+The auto-restart behavior depends on the Docker daemon starting at boot (it does by default on Ubuntu via systemd). Without that, the restart policy on containers is moot — they only auto-restart if the daemon they're attached to comes back up.
 
 ### 8.9 Operator access
 
@@ -324,7 +335,137 @@ The "do not auto-restart" column reflects current state. Once `restart: unless-s
 
 ## 9. ECR auth flow
 
-*To be filled in Phase 4.*
+White-box view of how `docker pull` from a private ECR repository authenticates. The black-box description is in `HLD.md` §5.2 ("Image distribution").
+
+### 9.1 The two principals involved
+
+Two distinct identities push to and pull from ECR. Mixing them up is a common source of confusion.
+
+| Direction | Principal | Mechanism |
+|---|---|---|
+| Laptop → ECR (push) | IAM user `saurabh-admin` | Long-lived access key in `~/.aws/credentials` |
+| EC2 → ECR (pull) | IAM role `fluxurl-ecr-pull-role` (assumed by the EC2 instance) | Temporary credentials served via the instance metadata service |
+
+The laptop uses long-lived credentials because there's no AWS-managed compute to attach a role to — it's a developer machine. The EC2 instance uses an instance role because it *is* AWS-managed compute, and roles are the right pattern for compute principals.
+
+### 9.2 The role and policy on EC2
+
+**Role:** `fluxurl-ecr-pull-role`
+- **ARN:** `arn:aws:iam::546201496354:role/fluxurl-ecr-pull-role`
+- **Trust policy:** allows the EC2 service principal (`ec2.amazonaws.com`) to assume the role. Without this, AWS would not be allowed to hand role credentials to an EC2 instance.
+- **Permissions policy:** the AWS-managed policy `AmazonEC2ContainerRegistryReadOnly`. Grants `ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:GetDownloadUrlForLayer`, `ecr:BatchGetImage`, plus a handful of describe/list calls. Explicitly does *not* grant push (`ecr:PutImage`, `ecr:UploadLayerPart`) — least privilege.
+
+**Attachment:** the role is attached to the EC2 instance via an *instance profile* (a thin wrapper around the role specific to EC2). When attached, AWS begins publishing temporary credentials at the instance metadata service.
+
+### 9.3 Instance metadata service (IMDS)
+
+The metadata service is a special endpoint reachable only from inside the EC2 instance — link-local IP `169.254.169.254`, not routable from outside the box.
+
+**What it serves for the role:**
+
+```
+http://169.254.169.254/latest/meta-data/iam/security-credentials/fluxurl-ecr-pull-role
+```
+
+Returns JSON:
+```json
+{
+  "Code": "Success",
+  "Type": "AWS-HMAC",
+  "AccessKeyId": "ASIA...",          ← prefix ASIA = session credentials
+  "SecretAccessKey": "...",
+  "Token": "...",                     ← session token (required for temp creds)
+  "Expiration": "..."                 ← when these creds stop working
+}
+```
+
+- `AccessKeyId` starts with `ASIA` (session credentials). Long-lived credentials start with `AKIA`. The prefix is a quick visual diagnostic.
+- `Token` is required for any API call signed with temp credentials.
+- `Expiration` is well in the future; AWS refreshes credentials before they expire, transparently.
+
+**IMDSv2:** modern AMIs default to IMDSv2, which requires a session-token handshake before the credential GET works. The AWS SDK handles this automatically; manual `curl` against IMDS needs an explicit `PUT` to obtain a token first.
+
+### 9.4 What `aws ecr get-login-password` actually does
+
+The login command pipes through several layers; the relevant chain on EC2 is:
+
+```
+aws ecr get-login-password --region ap-south-1
+       │
+       ▼
+AWS CLI: "I need credentials"
+       │
+       │   Credential provider chain checks (in order):
+       │     1. environment variables (AWS_ACCESS_KEY_ID etc.) → not set
+       │     2. ~/.aws/credentials file → does not exist
+       │     3. EC2 instance metadata service (IMDS) → found!
+       │
+       ▼
+AWS CLI: calls ECR's GetAuthorizationToken API, signed with temp creds
+       │
+       ▼
+ECR: validates the signature, looks up the principal
+     (sees "this is fluxurl-ecr-pull-role"), checks the policy
+     (sees ecr:GetAuthorizationToken is allowed), returns a token
+       │
+       ▼
+AWS CLI: prints the token to stdout (which is a base64-encoded
+         "user:password" string for Docker login)
+```
+
+The token is then piped into `docker login --username AWS --password-stdin <ecr-host>`, which stores Docker credentials in `~/.docker/config.json` (or a credential helper) and tells subsequent `docker pull` calls to use them.
+
+**Token lifetime:** ~12 hours. After that, any new `docker pull` returns 401 Unauthorized; re-running the login command refreshes. Phase 5 (CI/CD) re-authenticates per deploy, so this is invisible there. In Phase 4's manual flow, it's a brief friction the operator handles.
+
+### 9.5 What `docker pull` does on top of that
+
+Once Docker has ECR credentials cached:
+
+```
+docker pull 546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl:latest
+       │
+       ▼
+Docker daemon: resolves the tag against ECR
+       │   GET /v2/fluxurl/manifests/latest
+       │   Authorization: Bearer <token from login>
+       │
+       ▼
+ECR: returns the manifest (a JSON document listing layer digests)
+       │
+       ▼
+Docker daemon: for each layer in the manifest,
+   if NOT already in /var/lib/docker/overlay2/, pull it:
+     GET /v2/fluxurl/blobs/sha256:<digest>
+       │
+       ▼
+ECR: streams the layer blob (compressed tar)
+       │
+       ▼
+Docker daemon: verifies digest, unpacks layer into overlay2,
+   assembles image from all layers, tags it locally
+```
+
+The deduplication is automatic — if a layer's digest is already in the local store (from a previous pull, a `docker save`/`load` in Phase 3, or a different image that shared the layer), it's not re-downloaded. This is why subsequent pulls of slightly-changed images are nearly free over the wire.
+
+### 9.6 Credential isolation between push and pull
+
+A small but important design point: the EC2 instance role *cannot push* to ECR. The `AmazonEC2ContainerRegistryReadOnly` policy explicitly excludes write actions. If the EC2 instance were compromised, an attacker could not push a malicious image to ECR using the role's credentials. Push permission lives only with the laptop's IAM user, whose credentials are not on EC2 at all.
+
+In Phase 5, the laptop's role in pushing is replaced by GitHub Actions. The CI workflow will use a *different* IAM principal (likely a dedicated push role assumed via OIDC federation), keeping push and pull permissions on separate principals throughout.
+
+### 9.7 What to verify when ECR auth misbehaves
+
+Diagnostic order, from cheapest to most expensive check:
+
+1. **`aws sts get-caller-identity`** on EC2 — confirms the metadata service is returning credentials and they're for the expected role. If this fails, the role isn't attached or IMDS is unreachable.
+2. **`aws ecr describe-repositories --region ap-south-1`** — confirms the role has ECR read permissions and ECR is reachable. If this fails with `AccessDenied`, the permissions policy is missing or wrong.
+3. **`aws ecr get-login-password --region ap-south-1`** — confirms the auth-token API works specifically. If steps 1 and 2 pass but this fails, propagation delay; retry after 30 seconds.
+4. **`docker login`** — confirms Docker accepts the token. Very rarely fails if step 3 worked.
+5. **`docker pull <ecr-uri>/fluxurl:latest`** — the actual pull. If steps 1–4 worked but pull returns 401, the token has expired (>12 h since login) — re-run step 3 and step 4.
+
+The diagnostic ladder mirrors the auth flow's layers: identity → permissions → token issuance → token acceptance → token use.
+
+---
 
 ## 10. CI/CD workflow structure
 
