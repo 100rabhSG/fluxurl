@@ -214,13 +214,13 @@ Stop copying images around. Pull from a real registry, with proper auth.
 
 **Build:**
 
-- [ ] Create ECR private repo
-- [ ] From your laptop: tag image, `aws ecr get-login-password | docker login`, push
-- [ ] Create IAM role with `AmazonEC2ContainerRegistryReadOnly` policy
-- [ ] Attach role to EC2 instance
-- [ ] On EC2: `aws ecr get-login-password` works **without any credentials configured** — this is the IAM moment
-- [ ] Pull image from ECR on EC2, run it
-- [ ] Stop using the locally-copied image entirely
+- [x] Create ECR private repo
+- [x] From your laptop: tag image, `aws ecr get-login-password | docker login`, push
+- [x] Create IAM role with `AmazonEC2ContainerRegistryReadOnly` policy
+- [x] Attach role to EC2 instance
+- [x] On EC2: `aws ecr get-login-password` works **without any credentials configured** — this is the IAM moment
+- [x] Pull image from ECR on EC2, run it
+- [x] Stop using the locally-copied image entirely
 
 **Checkpoint:** Your EC2 box authenticates to ECR using its instance role. Zero AWS keys on the server. Image pulls successfully.
 
