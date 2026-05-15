@@ -16,7 +16,7 @@ services:
       retries: 5
 
   migrate:
-    image: fluxurl:latest
+    image: 546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl:latest
     container_name: fluxurl-migrate
     environment:
       DATABASE_URL: postgresql+asyncpg://fluxurl:fluxurl@db:5432/fluxurl
@@ -27,7 +27,7 @@ services:
         condition: service_healthy
 
   app:
-    image: fluxurl:latest
+    image: 546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl:latest
     container_name: fluxurl-app
     restart: unless-stopped
     environment:
