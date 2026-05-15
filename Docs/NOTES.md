@@ -441,3 +441,7 @@ AWS checks the policies attached to the principal: "is this principal allowed to
 Allow → request proceeds
 Deny → 403
 ```
+
+### Auth flow for ECR in our project
+We already have credentials set in our CLI through access_key + secret_key. Now we request temporary docker password from AWS for ECR. This temporary password is used by Docker on our laptop to push images to ECR.
+On EC2 side, we'll attach an IAM role that gives instance permission to talk to ECR. A new temporary docker password is generated here which will be used by docker on our EC2 instance to pull images from ECR.
