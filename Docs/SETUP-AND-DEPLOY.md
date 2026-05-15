@@ -23,11 +23,16 @@ git clone <your-repo-url>
 cd fluxurl
 ```
 
-**2. Build the image**
+**2. Create `.env`**
 
-```bash
-docker build -t fluxurl:latest .
+Both `DATABASE_URL` and `BASE_URL` are required — the app will refuse to start if either is missing. Create a `.env` file in the project root:
+
 ```
+DATABASE_URL=postgresql+asyncpg://fluxurl:fluxurl@db:5432/fluxurl
+BASE_URL=http://localhost:8000
+```
+
+`.env` is in `.gitignore` and `.dockerignore`; it's a dev-only convenience and never enters the image.
 
 **3. Start the stack**
 
@@ -35,7 +40,7 @@ docker build -t fluxurl:latest .
 docker compose up
 ```
 
-This starts three containers:
+The dev compose file uses `build: .`, so compose builds the image automatically the first time. This starts three containers:
 - `fluxurl-db` — PostgreSQL 16
 - `fluxurl-migrate` — runs `alembic upgrade head`, then exits
 - `fluxurl-app` — FastAPI app on port 8000
@@ -99,7 +104,7 @@ docker exec -it fluxurl-db psql -U fluxurl -d fluxurl
 
 ```bash
 docker compose logs -f app     # follow app logs
-docker compose logs db          # one-shot db logs
+docker compose logs db         # one-shot db logs
 ```
 
 **Create a new migration after model changes**
@@ -124,7 +129,17 @@ Without `--build`, compose will reuse the existing image even if your code chang
 
 ## Part 2 — AWS EC2 Deployment
 
-This section covers manual deployment to EC2. CI/CD (GitHub Actions → ECR → EC2) is the eventual goal, but the manual flow comes first.
+This section covers manual deployment to EC2. CI/CD (GitHub Actions → ECR → EC2) is the eventual goal (Phase 5), but the manual flow comes first.
+
+The current production architecture (end of Phase 4):
+
+- **Compute:** single EC2 instance (t3.micro, Ubuntu 22.04) in `ap-south-1`
+- **Public address:** Elastic IP `3.109.34.168` (replace with your own if forking)
+- **Image source:** ECR private repository `546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl`
+- **EC2 → ECR auth:** IAM instance role `fluxurl-ecr-pull-role` (no AWS keys on the box)
+- **Laptop → ECR auth:** IAM user `saurabh-admin` via `~/.aws/credentials`
+
+For the *why* behind these choices, see `HLD.md` §5.2 and `LLD.md` §9.
 
 ### Prerequisites
 
@@ -133,7 +148,7 @@ This section covers manual deployment to EC2. CI/CD (GitHub Actions → ECR → 
 - A budget alarm set in AWS Billing (recommended: $1)
 - SSH key pair downloaded as `.pem` and stored securely (e.g., `~/.ssh/fluxurl-key.pem`)
 
-### Initial EC2 setup
+### Initial EC2 setup (one-time)
 
 **1. Launch an EC2 instance**
 
@@ -168,11 +183,11 @@ icacls C:\path\to\fluxurl-key.pem /grant:r "$($env:USERNAME):R"
 ssh -i ~/.ssh/fluxurl-key.pem ubuntu@<public-ip>
 ```
 
-**4. Install Docker on the instance**
+**4. Install Docker and AWS CLI on the instance**
 
 ```bash
 sudo apt-get update && sudo apt-get upgrade -y
-sudo apt-get install -y ca-certificates curl gnupg lsb-release
+sudo apt-get install -y ca-certificates curl gnupg lsb-release awscli
 
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -199,65 +214,45 @@ Verify:
 ```bash
 docker --version
 docker compose version
+aws --version
 docker run hello-world
 ```
 
-### Deploying a new build to EC2
+### ECR + IAM instance role setup (one-time)
 
-**1. Build the image locally**
+**1. Create the ECR repository**
 
-```bash
-docker build -t fluxurl:latest .
-```
+In the AWS console: ECR → Private registry → Create repository:
+- Repository name: `fluxurl`
+- Tag immutability: Disabled (mutable, for `:latest` workflow — see [ADR 0011](decisions/0011-image-tagging-strategy.md))
+- Scan on push: Enabled
 
-**2. Save the image as a tar file**
+The repository URI will be `<account-id>.dkr.ecr.ap-south-1.amazonaws.com/fluxurl`.
 
-```bash
-docker save fluxurl:latest -o fluxurl.tar
-```
+**2. Create the IAM role for EC2**
 
-**3. Copy the tar to EC2**
+IAM → Roles → Create role:
+- Trusted entity: AWS service → EC2
+- Permissions policy: `AmazonEC2ContainerRegistryReadOnly`
+- Name: `fluxurl-ecr-pull-role`
 
-```bash
-scp -i ~/.ssh/fluxurl-key.pem fluxurl.tar ubuntu@<elastic-ip>:~/
-```
+**3. Attach the role to the EC2 instance**
 
-**4. Copy the production compose file**
+EC2 → Instances → select instance → Actions → Security → Modify IAM role → select `fluxurl-ecr-pull-role` → Update.
 
-```bash
-scp -i ~/.ssh/fluxurl-key.pem docker-compose.prod.yml ubuntu@<elastic-ip>:~/
-```
-
-**5. SSH in and load the image**
+Verify on EC2:
 
 ```bash
-ssh -i ~/.ssh/fluxurl-key.pem ubuntu@<elastic-ip>
+aws sts get-caller-identity
 ```
 
-On EC2:
+Expected output: an ARN containing `assumed-role/fluxurl-ecr-pull-role/<instance-id>`. If this works, the instance role is correctly attached and serving credentials via IMDS.
 
 ```bash
-docker load -i fluxurl.tar
-rm fluxurl.tar
+aws ecr describe-repositories --region ap-south-1
 ```
 
-**6. Start (or restart) the stack**
-
-```bash
-docker compose -f docker-compose.prod.yml up -d --force-recreate
-```
-
-The `--force-recreate` flag ensures containers pick up any env var changes from the compose file.
-
-**7. Verify**
-
-From your laptop:
-
-```bash
-curl http://<elastic-ip>/healthz
-```
-
-Expected: `{"db": "ok"}`
+Should list the `fluxurl` repository. If this works, ECR is reachable with the role's permissions.
 
 ### Elastic IP (one-time setup)
 
@@ -273,17 +268,70 @@ Select the new Elastic IP → Actions → Associate Elastic IP address. Pick the
 
 **3. Update `BASE_URL`**
 
-In `docker-compose.prod.yml`:
+In `docker-compose.prod.yml`, on the `app` and `migrate` services:
 
 ```yaml
 app:
   environment:
     BASE_URL: http://<elastic-ip>
+migrate:
+  environment:
+    BASE_URL: http://<elastic-ip>
 ```
 
-Commit, scp to EC2, recreate the container (see "Deploying a new build to EC2" above).
+Both services need `BASE_URL` set, even though `migrate` doesn't use it — see `LLD.md` §7.4 for the reason.
+
+Commit, scp to EC2, recreate the containers (see "Deploying a new build to EC2" below).
 
 > **Important:** Once you start handing out short URLs with this Elastic IP, you've committed to keeping it. Releasing the Elastic IP (or replacing it with another) silently breaks every short URL ever generated up to that point.
+
+### Deploying a new build to EC2
+
+This is the manual flow used after Phase 4. Phase 5 will automate it via GitHub Actions; until then, every code change requires this sequence.
+
+**On laptop:**
+
+```bash
+# 1. Build the image
+docker build -t fluxurl:latest .
+
+# 2. Tag for ECR
+docker tag fluxurl:latest 546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl:latest
+
+# 3. Authenticate Docker to ECR (laptop uses your IAM user credentials)
+aws ecr get-login-password --region ap-south-1 | \
+  docker login --username AWS --password-stdin 546201496354.dkr.ecr.ap-south-1.amazonaws.com
+
+# 4. Push
+docker push 546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl:latest
+```
+
+**On EC2 (via SSH):**
+
+```bash
+# 5. Authenticate Docker to ECR (EC2 uses its instance role; no keys needed)
+aws ecr get-login-password --region ap-south-1 | \
+  docker login --username AWS --password-stdin 546201496354.dkr.ecr.ap-south-1.amazonaws.com
+
+# 6. Pull the new image
+docker compose -f docker-compose.prod.yml pull
+
+# 7. Recreate containers with the new image
+docker compose -f docker-compose.prod.yml up -d --force-recreate
+```
+
+**Verify from your laptop:**
+
+```bash
+curl http://<elastic-ip>/healthz
+```
+
+Expected: `{"db": "ok"}`
+
+Notes:
+- The ECR auth token (steps 3 and 5) lasts ~12 hours. If `docker pull` returns 401, just re-run the `docker login` step.
+- The first push uploads all layers (~75 MB). Subsequent pushes only upload changed layers — usually a few MB.
+- `--force-recreate` (step 7) is required to pick up env-var changes and to recreate containers with a newer image even when the tag (`:latest`) hasn't changed.
 
 ### When your home IP changes (security group)
 
@@ -306,8 +354,9 @@ Free tier covers 750 hours/month — about one instance running 24/7. To stretch
 **Start again:** Instance state → Start instance.
 
 After Start:
-- Public IP stays the same **only if** you have an Elastic IP attached
-- Containers do **not** auto-restart — you'll need to SSH in and run `docker compose -f docker-compose.prod.yml up -d`
+- Public IP stays the same (Elastic IP attached)
+- Containers auto-restart (`restart: unless-stopped` configured for `app` and `db`)
+- No manual `docker compose up` needed — the stack comes back on its own
 
 ---
 
@@ -319,9 +368,9 @@ After Start:
 
 Something else on your machine is bound to that port. On Windows, this is often IIS (Internet Information Services). Stop the conflicting service or use a different port mapping in `docker-compose.yml`.
 
-**"Image not found" after pulling the repo**
+**App container exits immediately with Pydantic ValidationError**
 
-You haven't built the image yet. Run `docker build -t fluxurl:latest .` first.
+`DATABASE_URL` or `BASE_URL` is missing from your environment. Check `.env` exists in the project root and contains both variables.
 
 **Tests fail with database connection errors**
 
@@ -341,9 +390,21 @@ In order of likelihood:
 
 Almost always the security group. Your home IP has probably changed since you set the SSH rule. See "When your home IP changes" above.
 
+**ECR auth fails: "no basic auth credentials" or 401**
+
+The ECR auth token has expired (~12-hour lifetime). Re-run the `aws ecr get-login-password | docker login` step.
+
+**`aws sts get-caller-identity` works but `aws ecr describe-repositories` fails with AccessDenied**
+
+The instance role is attached but doesn't have ECR permissions. Verify the role has `AmazonEC2ContainerRegistryReadOnly` attached (IAM console → Roles → `fluxurl-ecr-pull-role` → Permissions).
+
+**`docker pull` from ECR is slow or hangs**
+
+Outbound HTTPS may be restricted somewhere upstream. The instance needs to reach `*.amazonaws.com` and `registry-1.docker.io` (the latter for the Postgres image). Check the security group's outbound rules — by default these are unrestricted.
+
 **Short URLs show `localhost:8000` instead of the EC2 IP**
 
-The `BASE_URL` env var isn't set in the compose file on EC2, or the container wasn't recreated after the change. Run `docker compose -f docker-compose.prod.yml up -d --force-recreate` and try again.
+Either `BASE_URL` isn't set in the compose file on EC2, or the container wasn't recreated after the change. Run `docker compose -f docker-compose.prod.yml up -d --force-recreate` and verify with `docker exec fluxurl-app printenv BASE_URL`.
 
 **Public IP changed after I stopped/started the instance**
 
@@ -351,7 +412,14 @@ You don't have an Elastic IP attached. See "Elastic IP (one-time setup)" above.
 
 **Containers aren't running after a reboot**
 
-Currently expected behavior — no restart policy is configured. SSH in and run `docker compose -f docker-compose.prod.yml up -d`. Adding `restart: unless-stopped` to each service in `docker-compose.prod.yml` would fix this; that's a deliberate Phase 3 follow-up.
+The restart policy should bring them back automatically — `restart: unless-stopped` is set on `app` and `db`. If they're not running:
+1. Check `docker compose -f docker-compose.prod.yml ps` for status
+2. Check `docker compose -f docker-compose.prod.yml logs app` for crash details
+3. If the policy is missing, verify `docker inspect fluxurl-app | grep -A 1 RestartPolicy` shows `unless-stopped`
+
+**`migrate` exits with Pydantic ValidationError**
+
+`migrate` runs the same image as `app` and imports `get_settings()` via `alembic/env.py`. If any required env var (including `BASE_URL`) is missing from migrate's `environment:` block in `docker-compose.prod.yml`, migrate fails to start. Verify both `DATABASE_URL` and `BASE_URL` are set on the `migrate` service.
 
 ---
 
@@ -361,7 +429,7 @@ Currently expected behavior — no restart policy is configured. SSH in and run 
 
 - `Dockerfile` — multi-stage image build (builder: full Python, runtime: slim)
 - `docker-compose.yml` — local dev (uses `build: .`, exposes 8000 and 5432)
-- `docker-compose.prod.yml` — EC2 prod (uses `image: fluxurl:latest`, exposes 80 only)
+- `docker-compose.prod.yml` — EC2 prod (uses ECR image URI, exposes 80 only, restart policies set)
 - `alembic/` — database migrations
 - `Docs/HLD.md` — high-level design
 - `Docs/LLD.md` — low-level design
@@ -370,15 +438,25 @@ Currently expected behavior — no restart policy is configured. SSH in and run 
 
 ### Environment variables
 
-| Variable | Used by | Default | Required? |
+| Variable | Used by | Required? | Notes |
 |---|---|---|---|
-| `DATABASE_URL` | app, migrate | — | yes |
-| `BASE_URL` | app | `http://localhost:8000` | should be required in prod |
-| `POSTGRES_USER` | db | `fluxurl` | yes |
-| `POSTGRES_PASSWORD` | db | `fluxurl` | yes |
-| `POSTGRES_DB` | db | `fluxurl` | yes |
+| `DATABASE_URL` | app, migrate | **Yes** | No default. App fails to start if missing. |
+| `BASE_URL` | app, migrate | **Yes** | No default. Required on migrate too because alembic/env.py imports get_settings(). |
+| `POSTGRES_USER` | db | Yes | `fluxurl` |
+| `POSTGRES_PASSWORD` | db | Yes | `fluxurl` |
+| `POSTGRES_DB` | db | Yes | `fluxurl` |
 
 ### Compose file selection
 
 - Local: `docker compose up` (uses `docker-compose.yml` by default)
-- Production: `docker compose -f docker-compose.prod.yml up -d` (must specify explicitly)
+- Production: `docker compose -f docker-compose.prod.yml <command>` (must specify explicitly)
+
+### AWS resources (production)
+
+| Resource | Identifier | Region |
+|---|---|---|
+| EC2 instance | `i-0ba70062d8f85852b` | ap-south-1 |
+| Elastic IP | `3.109.34.168` | ap-south-1 |
+| ECR repository | `546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl` | ap-south-1 |
+| IAM instance role | `fluxurl-ecr-pull-role` | global |
+| Security group | `fluxurl-sg` (SSH from My IP, HTTP from anywhere) | ap-south-1 |
