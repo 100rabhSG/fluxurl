@@ -445,3 +445,58 @@ Deny → 403
 ### Auth flow for ECR in our project
 We already have credentials set in our CLI through access_key + secret_key. Now we request temporary docker password from AWS for ECR. This temporary password is used by Docker on our laptop to push images to ECR.
 On EC2 side, we'll attach an IAM role that gives instance permission to talk to ECR. A new temporary docker password is generated here which will be used by docker on our EC2 instance to pull images from ECR.
+
+## Phase 5: CI/CD
+CI verifies that code is correct. CD verifies that correct code reaches production. They're sequential phases of the same pipeline, but with different triggers, different concerns, and different failure modes.
+
+### CI - Continuous Integration
+_Automation around code correctness._ Whenever someone pushes code, automated checks run to verify it doesn't break anything. The output of CI is binary signal: green (good to merge) or red (don't merge). CI catches the problem before it reach `master`.
+
+Typical CI steps:
+- **Lint:** does the code follow style rules? (ruff, eslint, etc)
+- **Type check:** do the types line up? (mypy, pyright, etc)
+- **Unit tests:** do individual functions behave correctly?
+- **Integration tests:** do components work together?
+- **Build:** does the code compile / image build successfully?
+- **Security scans:** any known vulnerabilities in dependencies?
+
+### CD - Continuous Deployment (or sometimes Continuous Delivery)
+_Automation around shipping._ When code reaches a trusted state (usually merged to master with green CI), it goes to production automatically.
+
+Typical CD steps:
+- **Build artifact:** the thing you'll deploy (a Docker image, a binary, a static site bundle)
+- **Push to registry / artifact store**
+- **Trigger deployment:** tell production to pull the new artifact
+- **Run smoke tests:** verify production responds correctly after deploy
+- **Notify:** Slack, email, etc. that a deploy happened
+
+CD removes the manual deployment step. Code that passed CI on trusted branch ships automatically.
+
+#### Continuous Delivery vs Continuous Deployment
+- **Continuous Delivery:** Every successful build is deployable to production at the click of a button. The button is still clicked by human.
+- **Continuous Deployment:** Every successful build is deployed automatically, no button.
+
+The distinction matters in regulated environments (finance, healthcare) where every production change requires human sign-off, those teams do Continuous Delivery, not Continuous Deployment.
+
+## GitHub Actions mechanics
+When you push code to GitHub, GitHub checks if there are any workflows in `.github/workflows/` that should run for this push. If yes:
+1. Spins up a brand new VM in their cloud.
+2. Installs OS and a standard toolkit (Git, Docker, common languages, AWS CLI, etc.)
+3. Clones the repo to VM.
+4. Executes the steps specified in workflow file.
+5. Captures all output, exit codes, and uploaded artifacts.
+6. Destroys the VM.
+
+The VM are called runners.
+Every workflow run starts from absolute zero. Nothing persists from one run to next unless explicitly arranged to persist (via artifacts, caches, or external storage).
+
+### Building blocks: workflows, jobs, steps, actions
+These four terms form a hierarchy 
+
+- **Workflow:** the top level entity. A single YAML file in `.github/workflows/`. Each file defines a workflow. Each workflow has a name, triggers, and one or more jobs.
+
+- **Job:** a unit of work that runs on a single runner. A workflow can have multiple jobs and each job get its own fresh runner. Jobs run in parallel by default, sequential ordering is created by `needs:` dependencies.
+
+- **Step:** a single command or action within a job. Steps run sequentially on the runner. If one step fails, subsequent steps in that job are skipped (unless configured to run anyways).
+
+- **Action:** a reusable bundle of logic. An action is essentially 'a step you can reference by name'.
