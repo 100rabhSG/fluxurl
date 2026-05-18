@@ -500,3 +500,15 @@ These four terms form a hierarchy
 - **Step:** a single command or action within a job. Steps run sequentially on the runner. If one step fails, subsequent steps in that job are skipped (unless configured to run anyways).
 
 - **Action:** a reusable bundle of logic. An action is essentially 'a step you can reference by name'.
+
+## Secrets management in CI
+CI workflows often need sensitive or semi-sensitive values like ECR registry ID, EC2 instance ID, SSH private key, etc. Not all of these have same level of sensitivity. 
+
+### Github's three storage mechanism
+Github gives three places to store values for workflows. Each has a different purpose.
+
+1. **Repository secrets:** Used for sensitive values that must be encrypted. These are encrypted at rest, decrypted only when workflow needs them. Automatically masked in workflow logs. Can be accessed using `${{secrets.MY_SECRET}}`
+
+2. **Repository variables:** used for non-sensitive configuration values. These are not encrypted and not masked. They're just key-value pairs stored at the repo level. Anyone who can read the repo settings can read them.
+
+3. **Environment secrets and variables:** same as above but tied to specific GitHub Actions environment. Examples of environments: Production, staging, etc.
