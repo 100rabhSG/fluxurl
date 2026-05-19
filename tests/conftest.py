@@ -5,6 +5,15 @@ Key idea: we replace the real Postgres session with an in-memory SQLite session
 so tests are fast, isolated, and don't need Docker running.
 """
 
+import os
+
+# Set required env vars *before* importing anything from `app`, because the
+# import chain reaches `app.config.Settings`, which fails fast if these are
+# missing. Values here are dummies — the real DB is swapped in by fixtures
+# below, and BASE_URL isn't exercised by tests.
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+os.environ.setdefault("BASE_URL", "http://test")
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
