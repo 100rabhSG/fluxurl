@@ -9,11 +9,16 @@ class Settings(BaseSettings):
 
     database_url: str = Field(
         ...,
-        description="Async SQLAlchemy URL for Postgres. Required — no default; boot fails if missing.",
+        description=(
+            "Async SQLAlchemy URL for Postgres. Required — no default; boot fails if missing."
+        ),
     )
     base_url: str = Field(
         ...,
-        description="Public base URL used to build short URLs in API responses. Required — no default; boot fails if missing.",
+        description=(
+            "Public base URL used to build short URLs in API responses. "
+            "Required — no default; boot fails if missing."
+        ),
     )
 
 
