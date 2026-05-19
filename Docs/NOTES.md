@@ -512,3 +512,14 @@ Github gives three places to store values for workflows. Each has a different pu
 2. **Repository variables:** used for non-sensitive configuration values. These are not encrypted and not masked. They're just key-value pairs stored at the repo level. Anyone who can read the repo settings can read them.
 
 3. **Environment secrets and variables:** same as above but tied to specific GitHub Actions environment. Examples of environments: Production, staging, etc.
+
+### Idempotency and Reproducibility in CI
+**Idempotency:** running the same operation multiple times produces the same result as running it once.
+
+**Reproducibility:** the same inputs produce the same outputs, regardless of when or where you run them.
+
+`append(list, "x")` - Reproducible but not idempotent. Same input list always gives same output list (reproducible), but running it twice gives different output than running it once (not idempotent).
+
+In CI, both matters because:
+- CI runs are automated retries of work. If "deploy" isn't idempotent, retrying after a failure can break things in new ways.
+- CI runs need to be trustworthy. If the same commit produces different test results on different days, "CI green" doesn't mean anything.
