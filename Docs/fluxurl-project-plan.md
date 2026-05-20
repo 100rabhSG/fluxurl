@@ -200,9 +200,7 @@ Get your container running on AWS, by hand. No automation yet — that's the poi
 
 **Design docs:**
 
-- ADR: Postgres in a container on EC2 vs RDS for v1 (cost, learning value, deferred to Phase 7)
-- ADR: t2.micro vs t3.micro, AMI choice
-- ADR: security group ingress rules (why SSH from your IP only, why 80 from anywhere)
+- No ADRs: RDS is deferred to Phase 7, t3.micro / Ubuntu 22.04 was free-tier forced, and Security group rules (SSH from my IP, 80 from anywhere) have no rejected alternative worth defending.
 - Update `HLD.md`: add the deployment topology (EC2, SG, public IP)
 - Update `LLD.md`: on-host layout (where the compose file lives, how containers restart, where logs go, how env vars are supplied to the box)
 
@@ -252,11 +250,12 @@ The whole loop, automated.
 
 **Build:**
 
-- [ ] `.github/workflows/ci.yml`: on PR — checkout, install deps, ruff lint, pytest (with Postgres service container)
-- [ ] `.github/workflows/deploy.yml`: on push to `master` — run CI, then build image, push to ECR, SSH to EC2, pull and restart
-- [ ] GitHub Secrets configured: AWS credentials (a *deploy-only* IAM user with minimal perms — ECR push, no more), EC2 SSH key, EC2 host
-- [ ] On EC2, deployment is a simple script: `docker compose pull && docker compose up -d`
-- [ ] First push to master triggers full pipeline — green build, app updates
+- [x] `.github/workflows/ci.yml` — single workflow with four jobs: `lint` (ruff) and `test` (pytest, in-memory SQLite via `aiosqlite`) on every push/PR; `build-and-push` and `deploy` gated on `github.ref == 'refs/heads/master'`
+- [x] Authentication via **OIDC**, not static keys: GitHub Actions assumes `fluxurl-github-actions-role` via `AssumeRoleWithWebIdentity`. Trust policy scoped to `repo:100rabhSG/fluxurl:ref:refs/heads/master`. No GitHub Secrets, no IAM user
+- [x] `build-and-push` tags images with both the commit SHA and `latest`, pushes to ECR
+- [x] `deploy` triggers EC2 via **SSM Run Command** (`aws ssm send-command`, `AWS-RunShellScript`) — no SSH, no inbound port 22. Commands run as root on the instance: `aws ecr get-login-password | docker login`, then `docker compose -f docker-compose.prod.yml pull` and `up -d --force-recreate`
+- [x] `docker-compose.prod.yml` lives on EC2 at `/home/ubuntu/` and references the ECR image by tag
+- [x] First push to master triggered full pipeline — green build, app updated
 
 **Checkpoint:** You change a string in the app, push to master, walk away, come back to find the new version live. Pipeline completes in under 5 minutes.
 
@@ -269,18 +268,15 @@ The whole loop, automated.
 **Concepts log:**
 
 - Difference between CI (test on PR) and CD (deploy on merge), and why they're often separate workflows
-- Why your GitHub Actions IAM user needs different (smaller) permissions than your EC2 instance role
+- OIDC federation vs static AWS keys in CI: how `AssumeRoleWithWebIdentity` works, why the trust policy's `sub` claim is the security boundary, why this beats a long-lived IAM user with access keys
 - The principle of least privilege, with concrete examples from your own setup
-- Why deploying via SSH is fine for v1 but not how big teams do it (foreshadowing for ECS/K8s discussions)
+- Why deploying via SSM Run Command is the right v1 choice (no inbound SSH, no key management) but not how big teams do it (foreshadowing for ECS/K8s discussions)
 
 **Design docs:**
 
-- ADR: deploy via SSH vs pull-based agent vs ECS/Fargate (why SSH is right for v1, what would force a change)
-- ADR: split CI and CD workflows vs one combined workflow
-- ADR: deploy-only IAM user permissions (exact policy and why each statement is there)
-- ADR: zero-downtime strategy for v1 (or explicit acknowledgement that v1 has a brief gap)
+- ADR: deploy mechanism — [0014](decisions/0014-deploy-mechanism.md) (SSM Run Command vs SSH vs pull-based agent vs ECS/Fargate)
 - Update `HLD.md`: add the CI/CD pipeline diagram
-- Update `LLD.md`: workflow structure (jobs, steps, secrets, where each step runs), the deploy script's exact contract
+- Update `LLD.md`: workflow structure (jobs, steps, OIDC trust, where each step runs), the SSM command sequence's exact contract
 
 ---
 
