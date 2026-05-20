@@ -2,8 +2,6 @@
 
 How to run Fluxurl locally for development, and how to deploy it to AWS EC2.
 
-> **Last verified:** May 2026 — Docker 29.x, Docker Compose v5.x, Ubuntu 22.04 LTS on EC2
-
 ---
 
 ## Part 1 — Local Setup
@@ -290,7 +288,14 @@ docker run hello-world
 sudo systemctl status amazon-ssm-agent
 ```
 
-The SSM agent should be `active (running)` — required for CI/CD deploys to work. If it shows `inactive` or `not-found`, install it:
+The SSM agent should be `active (running)` — required for CI/CD deploys to work. Ubuntu 22.04 AMIs ship it pre-installed via snap, so usually it's just inactive. Try starting it first:
+
+```bash
+sudo systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+sudo systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+```
+
+Only if the service is genuinely `not-found` (no pre-installed agent at all), install it:
 
 ```bash
 sudo snap install amazon-ssm-agent --classic
@@ -425,7 +430,7 @@ After creation, find the role → Trust relationships tab → Edit trust policy.
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:<your-github-username>/fluxurl:ref:refs/heads/master"
+          "token.actions.githubusercontent.com:sub": "repo:100rabhSG/fluxurl:ref:refs/heads/master"
         }
       }
     }
