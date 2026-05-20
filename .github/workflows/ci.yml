@@ -52,3 +52,24 @@ jobs:
 
       - name: Run pytest
         run: pytest
+
+  aws-auth:
+    name: AWS Auth (debug)
+    runs-on: ubuntu-latest
+    # Only run on main, because the role's trust policy only allows main
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write      # required: lets the runner request an OIDC token
+      contents: read       # default, but explicit is good
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::546201496354:role/fluxurl-github-actions-role
+          aws-region: ap-south-1
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
