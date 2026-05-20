@@ -56,8 +56,8 @@ jobs:
   aws-auth:
     name: AWS Auth (debug)
     runs-on: ubuntu-latest
-    # Only run on main, because the role's trust policy only allows main
-    if: github.ref == 'refs/heads/main'
+    # Only run on master, because the role's trust policy only allows master
+    if: github.ref == 'refs/heads/master'
     permissions:
       id-token: write      # required: lets the runner request an OIDC token
       contents: read       # default, but explicit is good
