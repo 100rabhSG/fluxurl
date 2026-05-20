@@ -53,14 +53,14 @@ jobs:
       - name: Run pytest
         run: pytest
 
-  aws-auth:
-    name: AWS Auth (debug)
+  build-and-push:
+    name: Build and push image
     runs-on: ubuntu-latest
-    # Only run on master, because the role's trust policy only allows master
-    if: github.ref == 'refs/heads/master'
+    needs: [lint, test]
+    if: github.ref == 'refs/heads/main'
     permissions:
-      id-token: write      # required: lets the runner request an OIDC token
-      contents: read       # default, but explicit is good
+      id-token: write
+      contents: read
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -71,5 +71,15 @@ jobs:
           role-to-assume: arn:aws:iam::546201496354:role/fluxurl-github-actions-role
           aws-region: ap-south-1
 
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        env:
+          ECR_REGISTRY: 546201496354.dkr.ecr.ap-south-1.amazonaws.com
+          ECR_REPOSITORY: fluxurl
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
