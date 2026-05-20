@@ -8,7 +8,7 @@ A URL shortener with analytics. Breadth-first, manual-before-automated learning 
 
 **Name:** Fluxurl
 
-**End state of v1:** Working URL shortener deployed on EC2 via GitHub Actions. Every push to `main` lints, tests, builds an image, pushes to ECR, and redeploys. Postgres runs as a container alongside the app.
+**End state of v1:** Working URL shortener deployed on EC2 via GitHub Actions. Every push to `master` lints, tests, builds an image, pushes to ECR, and redeploys. Postgres runs as a container alongside the app.
 
 **Stack (v1):**
 
@@ -253,12 +253,12 @@ The whole loop, automated.
 **Build:**
 
 - [ ] `.github/workflows/ci.yml`: on PR — checkout, install deps, ruff lint, pytest (with Postgres service container)
-- [ ] `.github/workflows/deploy.yml`: on push to `main` — run CI, then build image, push to ECR, SSH to EC2, pull and restart
+- [ ] `.github/workflows/deploy.yml`: on push to `master` — run CI, then build image, push to ECR, SSH to EC2, pull and restart
 - [ ] GitHub Secrets configured: AWS credentials (a *deploy-only* IAM user with minimal perms — ECR push, no more), EC2 SSH key, EC2 host
 - [ ] On EC2, deployment is a simple script: `docker compose pull && docker compose up -d`
-- [ ] First push to main triggers full pipeline — green build, app updates
+- [ ] First push to master triggers full pipeline — green build, app updates
 
-**Checkpoint:** You change a string in the app, push to main, walk away, come back to find the new version live. Pipeline completes in under 5 minutes.
+**Checkpoint:** You change a string in the app, push to master, walk away, come back to find the new version live. Pipeline completes in under 5 minutes.
 
 **Break it intentionally:**
 
