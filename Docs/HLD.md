@@ -2,7 +2,7 @@
 
 > Living document. Updated as each phase changes the architecture. See `Docs/decisions/` for the *why* behind each choice.
 >
-> **Status:** Phase 4 complete. App deployed manually to AWS EC2 with Elastic IP. Runtime image sourced from ECR; EC2 authenticates via an IAM instance role. CI/CD (Phase 5) not yet wired up.
+> **Status:** Phase 5 complete. App deployed to AWS EC2 with Elastic IP, image pulled from ECR. CI/CD via GitHub Actions: push to `master` triggers lint, tests, image build, ECR push, and SSM-triggered redeploy on EC2. All AWS auth is OIDC-federated or instance-role based; no long-lived AWS credentials exist anywhere in the system.
 
 ---
 
@@ -43,19 +43,22 @@ Fluxurl is a public URL shortener. Anyone on the internet can submit a long URL 
 
 The pieces that make up the system and what each one is responsible for.
 
-**v1 (current state, end of Phase 4):**
+**v1 (current state, end of Phase 5):**
 
 - **API service** — Python 3.12 + FastAPI app, async, single process. Handles `POST /shorten` and `GET /{short_code}`. Runs as a Docker container.
 - **Database** — single Postgres 16 instance. Stores URL mappings. Single source of truth. Runs as a Docker container alongside the API.
 - **Compute host** — AWS EC2 t3.micro running Ubuntu 22.04 LTS in `ap-south-1`. Hosts both containers.
 - **Public address** — AWS Elastic IP (`3.109.34.168`), pinned to the EC2 instance. Survives instance Stop/Start; the contract Fluxurl makes with short-URL holders is that this address doesn't change.
-- **Container registry** — AWS ECR private repository (`546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl`). Single source of truth for the runtime image. Built and pushed from laptop; pulled by EC2 during deploy.
-- **EC2 instance role** — IAM role `fluxurl-ecr-pull-role` attached to the EC2 instance. Grants ECR-read permissions via temporary credentials issued by AWS through the instance metadata service. No AWS credentials are stored on the EC2 instance.
+- **Container registry** — AWS ECR private repository (`546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl`). Single source of truth for the runtime image. Built and pushed by CI; pulled by EC2 during deploy. Lifecycle policy keeps the 5 most recent tagged images plus deletes untagged images after 7 days.
+- **EC2 instance role** — IAM role `fluxurl-ecr-pull-role` attached to the EC2 instance. Grants ECR-read and SSM-agent permissions via temporary credentials issued by AWS through the instance metadata service. No AWS credentials are stored on the EC2 instance.
+- **CI/CD pipeline** — GitHub Actions workflow at `.github/workflows/ci.yml`. Runs lint and tests on every push and PR; on push to `master`, additionally builds the image, pushes to ECR, and triggers a redeploy on EC2 via SSM Run Command.
+- **GitHub Actions role** — IAM role `fluxurl-github-actions-role` assumed by CI workflows via OIDC federation. Granted ECR push (scoped to the `fluxurl` repository) and SSM SendCommand (scoped to the EC2 instance). No long-lived AWS credentials exist in GitHub Secrets.
+- **OIDC identity provider** — GitHub Actions' identity provider (`token.actions.githubusercontent.com`) registered as a trusted federated identity provider in AWS IAM. Trust policy on the GitHub Actions role scopes assumption to workflows on `master` of this specific repository.
 
 **Deferred to later phases:**
 
-- **CI/CD pipeline** — GitHub Actions (Phase 5)
 - **Managed database** — AWS RDS (Phase 7)
+- **Observability** — CloudWatch logs and metrics (Phase 8)
 - **Reverse proxy + TLS** — Nginx + Let's Encrypt (Phase 9)
 - **Custom domain** — Phase 9
 - **Cache layer** — Redis (Phase 10)
@@ -150,52 +153,74 @@ The rationale for the separate `migrate` service is in [ADR 0010](decisions/0010
 
 The **image**, not the source code or the compose file. `app` and `migrate` use the *same locally-built image*, differentiated only by their `command`. `db` uses the upstream `postgres:16` image from Docker Hub. The compose file is environment-specific glue.
 
-### 5.2 Production topology (Phase 3 + Phase 4)
+### 5.2 Production topology (Phase 3 + Phase 4 + Phase 5)
 
-The runtime image is built on laptop locally, pushed to ECR, and pulled by a EC2 instance running the same compose layout as local-dev (with deliberate differences for network exposure and image source).
+The runtime image is built by CI, pushed to ECR, and pulled by a single EC2 instance running the same compose layout as local-dev (with deliberate differences for network exposure and image source). CI/CD is fully automated: a push to `master` triggers the full pipeline; no manual intervention is needed for routine deploys.
 
 ```
-   Developer laptop
-       │ docker build
-       │ docker push
+   git push origin master
+       │
        ▼
-┌────────────────────── AWS ap-south-1 ──────────────────────┐
-│                                                            │
-│   ┌──── ECR ────────────┐       ┌──── IAM ────────────┐    │
-│   │ fluxurl repo        │       │ Role:               │    │
-│   │ (private)           │◄──────┤ fluxurl-ecr-        │    │
-│   │   :latest           │ pull  │ pull-role           │    │
-│   └─────────────────────┘       │  • trust: ec2       │    │
-│                                 │  • perms: ECR read  │    │
-│                                 └──────────┬──────────┘    │
-│                                            │ attached      │
-│                                            ▼               │
-│   Internet ──► 3.109.34.168 (Elastic IP)                   │
-│                       │                                    │
-│   Security group "fluxurl-sg"                              │
-│     22/tcp from <my IP>     (SSH)                          │
-│     80/tcp from 0.0.0.0/0   (HTTP)                         │
-│                       │                                    │
-│                       ▼                                    │
-│   ┌──── EC2 t3.micro (Ubuntu 22.04) ────────┐              │
-│   │                                         │              │
-│   │   port 80 ──► app (container)           │              │
-│   │              :8000 inside               │              │
-│   │                                         │              │
-│   │   ┌─── compose bridge network ──┐       │              │
-│   │   │   migrate ──► app ──► db    │       │              │
-│   │   │   (one-shot)         :5432  │       │              │
-│   │   │                       │     │       │              │
-│   │   │            pgdata (named volume)    │              │
-│   │   │                       │     │       │              │
-│   │   └───────────────────────┼─────┘       │              │
-│   │                           ▼             │              │
-│   │              EBS gp3 root volume        │              │
-│   │              (8 GiB, persists           │              │
-│   │               across Stop/Start)        │              │
-│   └─────────────────────────────────────────┘              │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
+┌──── GitHub Actions ─────┐
+│  CI workflow (ci.yml):  │
+│    lint, test           │
+│    build-and-push       │
+│    deploy               │
+└────────┬────────────────┘
+         │ OIDC token → AssumeRoleWithWebIdentity
+         ▼
+┌──────────────────────────── AWS ap-south-1 ─────────────────────────────┐
+│                                                                          │
+│   ┌── IAM ──────────────────────┐    ┌── IAM ─────────────────────────┐  │
+│   │ OIDC provider:              │    │ Role: fluxurl-github-actions-  │  │
+│   │  token.actions              │◄───┤   role                         │  │
+│   │  .githubusercontent.com     │    │  • trust: OIDC, scoped: master │  │
+│   └─────────────────────────────┘    │  • perms: ECR push, SSM send   │  │
+│                                      └────────┬───────────────────────┘  │
+│                                               │ assumed                  │
+│                                               ▼                          │
+│   ┌──── ECR ──────────────┐   ┌──── SSM ──────────────────────┐          │
+│   │ fluxurl repo          │   │ SendCommand("AWS-Run-         │          │
+│   │ (private)             │◄──┤  ShellScript", instance-id)    │          │
+│   │   :latest             │   │  • docker login               │          │
+│   │   :<sha>              │   │  • docker compose pull        │          │
+│   │  (lifecycle:          │   │  • docker compose up -d       │          │
+│   │   keep 5, untagged    │   │           │                   │          │
+│   │   ≥7d expires)        │   └───────────┼───────────────────┘          │
+│   └───────────────────────┘               │ via SSM agent                │
+│            ▲                              ▼                              │
+│            │ pull          ┌──── EC2 t3.micro (Ubuntu 22.04) ────┐       │
+│            │ (instance     │                                     │       │
+│            │  role)        │   Elastic IP: 3.109.34.168          │       │
+│            │               │                                     │       │
+│            │               │   Security group "fluxurl-sg"       │       │
+│            │               │     22/tcp from <my IP>     (SSH)   │       │
+│            │               │     80/tcp from 0.0.0.0/0   (HTTP)  │       │
+│            │               │                                     │       │
+│            │               │   port 80 ──► app (container)       │       │
+│            │               │              :8000 inside           │       │
+│            │               │                                     │       │
+│            │               │   ┌─── compose bridge network ──┐   │       │
+│            │               │   │   migrate ──► app ──► db    │   │       │
+│            │               │   │   (one-shot)         :5432  │   │       │
+│            │               │   │                       │     │   │       │
+│            │               │   │            pgdata (named volume)        │
+│            │               │   │                       │     │   │       │
+│            │               │   └───────────────────────┼─────┘   │       │
+│            │               │                           ▼         │       │
+│            │               │              EBS gp3 root volume    │       │
+│            │               │              (8 GiB, persists       │       │
+│            │               │               across Stop/Start)    │       │
+│            │               │                                     │       │
+│            │               │   ┌── IAM role attached ──────┐     │       │
+│            └───────────────┼───┤ fluxurl-ecr-pull-role     │     │       │
+│                            │   │  • trust: ec2             │     │       │
+│                            │   │  • perms: ECR read, SSM   │     │       │
+│                            │   │    agent communication    │     │       │
+│                            │   └───────────────────────────┘     │       │
+│                            └─────────────────────────────────────┘       │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key differences from local-dev:**
@@ -217,31 +242,52 @@ The runtime image is built on laptop locally, pushed to ECR, and pulled by a EC2
 
 **Image distribution (Phase 4):**
 
-ECR is the canonical source of the runtime image. The laptop and the EC2 instance both interact with ECR; neither talks directly to the other.
+ECR is the canonical source of the runtime image. Neither CI nor EC2 talks directly to the other; both interact with ECR.
 
-- **Laptop → ECR (push):** authenticates to ECR using IAM user credentials (`saurabh-admin`), build the image locally, tag it with the ECR repository URI, and run `docker push`. Only changed layers transfer over the wire (deduplication is automatic via the OCI registry protocol).
-- **EC2 ← ECR (pull):** the EC2 instance authenticates to ECR using *temporary credentials* issued by AWS via the instance metadata service. These credentials originate from the `fluxurl-ecr-pull-role` IAM role attached to the instance. The role's permissions policy (`AmazonEC2ContainerRegistryReadOnly`) limits the instance to pull-only operations — it cannot push, delete repositories, or access other AWS services. Credentials are rotated automatically by AWS every few hours; no AWS keys are stored anywhere on the EC2 disk.
+- **CI → ECR (push):** the GitHub Actions workflow assumes `fluxurl-github-actions-role` via OIDC federation, then pushes the freshly-built image with two tags — `:latest` (mutable, points to current production) and `:<git-sha>` (immutable, traceable to the exact source commit). The role's ECR push permission is scoped to the `fluxurl` repository ARN, not to all of ECR.
+- **EC2 ← ECR (pull):** the EC2 instance authenticates to ECR using *temporary credentials* issued by AWS via the instance metadata service. These credentials originate from `fluxurl-ecr-pull-role`. The role's ECR permission is read-only — the instance cannot push, delete repositories, or push to other registries. Credentials are rotated automatically by AWS every few hours; no AWS keys are stored anywhere on the EC2 disk.
 
-This decoupling is the architectural payoff of Phase 4. The laptop has no awareness of where the image is consumed; EC2 has no awareness of where the image was built. Both ends communicate through the registry. Phase 5 will replace the laptop with a CI/CD runner and the manual SSH deploy with a CI-triggered pull — the registry seam stays untouched.
+The lifecycle policy on the ECR repository keeps the 5 most recent tagged images and deletes untagged images after 7 days. This bounds storage cost (well under free-tier limits) while preserving a rollback window of recent versions.
 
-**Deployment process (manual, end of Phase 4):**
+**CI/CD pipeline (Phase 5):**
 
-1. **Laptop:** `docker build -t fluxurl:latest .`
-2. **Laptop:** `docker tag fluxurl:latest <ecr-uri>/fluxurl:latest`
-3. **Laptop:** `docker push <ecr-uri>/fluxurl:latest`
-4. **EC2 (over SSH):** `aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin <ecr-uri>`
-5. **EC2:** `docker compose -f docker-compose.prod.yml pull`
-6. **EC2:** `docker compose -f docker-compose.prod.yml up -d --force-recreate`
+The workflow `.github/workflows/ci.yml` defines four jobs:
 
-Phase 5 (GitHub Actions) automates steps 1-3 on every push to `main`, and replaces steps 4-6 with an SSH-triggered remote deploy.
+| Job | Triggers | Purpose |
+|---|---|---|
+| `lint` | every push, every PR | `ruff check` over the codebase |
+| `test` | every push, every PR | `pytest` against in-memory SQLite (no Postgres needed in CI) |
+| `build-and-push` | only on push to `master`, after `lint` and `test` pass | builds the image, tags it `:latest` and `:<sha>`, pushes to ECR |
+| `deploy` | only on push to `master`, after `build-and-push` succeeds | sends SSM command to EC2 to pull and recreate containers |
+
+Authentication is OIDC-federated: every job that touches AWS requests an OIDC token from GitHub's identity provider, exchanges it for temporary AWS credentials via `AssumeRoleWithWebIdentity`, and uses those credentials for the duration of the job. No long-lived AWS credentials exist in GitHub Secrets. The trust policy on `fluxurl-github-actions-role` scopes assumption to the `master` branch of this specific repository — workflows from forks or other branches cannot assume the role.
+
+The deploy step uses **SSM Run Command** rather than SSH, chosen for three reasons documented in [ADR 0012](decisions/0012-deploy-mechanism.md):
+
+1. No stored credentials (SSH keys would have to live in GitHub Secrets, reversing the Phase 4 auth model).
+2. No inbound network changes (SSH would require opening port 22 to GitHub's IP ranges or `0.0.0.0/0`).
+3. Full audit trail via CloudTrail (every deploy is traceable to the workflow run and commit SHA that triggered it).
+
+The deploy command runs `docker login`, `docker compose -f docker-compose.prod.yml pull`, and `docker compose -f docker-compose.prod.yml up -d --force-recreate` on the EC2 instance under the SSM agent. The CI workflow waits for the command to complete and surfaces its output in the workflow logs.
+
+**Deployment process (automated, end of Phase 5):**
+
+```
+git push origin master
+```
+
+The pipeline does the rest. End-to-end: code committed → lint → tests → image built → pushed to ECR → SSM command sent → EC2 pulls new image → containers recreated → production updated. Typical duration: 3–5 minutes from `git push` to live.
+
+**Manual deploys remain available as break-glass:** if CI is broken, the same `docker build` / `docker tag` / `docker push` / `aws ssm send-command` (or SSH + `docker compose`) commands can be run from a developer laptop. The manual path is documented in `SETUP-AND-DEPLOY.md` Part 2 as a fallback.
 
 **What is *not* in this topology yet, and where it shows up:**
 
 - **No reverse proxy (Nginx)** — Phase 9
 - **No managed database** — `postgres:16` runs as a sibling container; RDS replaces it in Phase 7
 - **No TLS / custom domain** — Phase 9
-- **No automated deploys** — every code change requires the manual flow above; Phase 5 (GitHub Actions) automates it
-- **No ECR lifecycle policy** — old images accumulate in ECR over time; lifecycle rules (e.g., "keep last 10 images") arrive when storage cost matters
+- **No observability** — logs stay local on EC2; no metrics, traces, or alerting. Phase 8.
+- **No deployment strategies** — current model is "recreate": kill old containers, start new ones, ~5 seconds of downtime per deploy. Blue/green or rolling deploys require load balancers and multiple instances — Phase 12+ territory.
+- **No manual approval gate** — every push to `master` deploys to production. Acceptable at solo-dev scale; would need rethinking with a team or with real users.
 
 ---
 
@@ -258,8 +304,13 @@ What can break, what happens when it does, what's acceptable for v1. Updated as 
 | EBS volume corruption / loss | Permanent data loss, no recovery path | Yes — explicitly accepted, Phase 7 (RDS) fixes |
 | Home IP changes (developer) | SSH stops working until security group rule updated to new IP | Yes — 30-second console fix |
 | ECR unreachable during deploy | Deploy fails at the `docker pull` step; existing running containers unaffected | Yes — fall back to running version, retry deploy |
-| ECR auth token expired (12 h) | `docker pull` returns 401. Re-run `aws ecr get-login-password \| docker login` to refresh. | Yes — well-understood manual fix; Phase 5 CI handles auth per-deploy |
 | IAM role detached from instance | EC2 loses ECR pull permission; existing running containers unaffected | Operational discipline — role attachment is configuration, not runtime |
+| CI fails (lint or test) | No image built, no deploy. Production unaffected. | Yes — intended behavior; CI is the gate |
+| Build-and-push fails (e.g., ECR auth) | No new image in ECR, deploy job skipped. Production unaffected. | Yes — partial pipeline failure is contained |
+| Deploy command fails on EC2 | SSM reports non-zero exit; CI workflow fails. New image is in ECR but EC2 still runs previous image. | Yes — fall back to running version; investigate via SSM command output in workflow logs |
+| SSM agent unreachable on EC2 | `aws ssm send-command` accepts the request but the command's status moves to `DeliveryTimedOut`; the `wait command-executed` step fails. | Operational — agent is critical-path; restart via SSH if needed |
+| GitHub Actions outage | Pushes accept but no CI runs; production unchanged | Yes — fall back to manual deploy path documented in SETUP-AND-DEPLOY.md |
+| OIDC trust policy misconfigured | `AssumeRoleWithWebIdentity` fails; deploy job errors immediately. | Yes — fast, loud failure; fix trust policy and retry |
 | Code collision retries exhausted | 500 to client | Yes — vanishingly rare at v1 scale (~6 in 100k inserts at peak projected scale) |
 | Deploy mid-request | In-flight request fails | Yes — client retries |
 
@@ -305,19 +356,19 @@ Deliberately deferred. Each cut is intentional, not forgotten.
 
 - **Backups** — no automated or manual backup strategy in v1. Most consequential cut; called out explicitly so it isn't missed.
 - **Custom domain / TLS** — service is reached by raw Elastic IP. Phase 9 introduces a domain + Let's Encrypt.
-- **Automated deployment** — manual SSH-and-compose flow. Phase 5 introduces GitHub Actions CI/CD.
-- **Immutable image tags** — Phase 4 uses `:latest` only; tag-level rollback isn't possible. See [ADR 0011](decisions/0011-image-tagging-strategy.md). Phase 5 adds git-SHA-tagged builds.
-- **ECR lifecycle policies** — old images accumulate; no auto-cleanup. Phase 5 follow-up once accumulation matters.
+- **Observability** — no centralized logs, metrics, or alerting. Phase 8.
+- **Multi-environment** — single production environment, no staging.
+- **Manual approval gates** — every push to `master` deploys automatically. No human review step.
+- **Blue/green or rolling deploys** — current model is "recreate" (brief downtime on each deploy). Phase 12+ if multi-instance.
 - Kubernetes / ECS / Fargate / Lambda
 - CloudFront / Route 53 / API Gateway
 - Redis, Celery
-- Multi-environment (single env only)
 
 ---
 
 ## 9. Open questions and known limitations
 
-**Resolved during Phases 1–4:**
+**Resolved during Phases 1–5:**
 
 - ~~**Primary key for `urls`**~~ → `short_code` as natural PK. See [ADR 0005](decisions/0005-primary-key-for-urls-table.md).
 - ~~**URL validation strictness**~~ → Pydantic `HttpUrl` validates format (requires scheme + host). Accepts `http` and `https`; rejects relative URLs and malformed schemes.
@@ -325,10 +376,15 @@ Deliberately deferred. Each cut is intentional, not forgotten.
 - ~~**404 behavior**~~ → Plain JSON `{"detail": "short code not found"}`. Same message for invalid shape and valid-but-missing (prevents information leakage).
 - ~~**Container restart policy**~~ → `restart: unless-stopped` applied to `app` and `db` in `docker-compose.prod.yml`. `migrate` deliberately excluded (one-shot service). Verified by EC2 reboot test.
 - ~~**`BASE_URL` default behavior**~~ → Now required at startup; no default. Missing `BASE_URL` raises a Pydantic `ValidationError` at startup. Migrate service must also receive `BASE_URL` because it imports the same `Settings` class (alembic/env.py calls `get_settings()`).
-- ~~**Image distribution mechanism**~~ → ECR (Phase 4). EC2 authenticates via instance role; no AWS keys on the box. See [ADR 0011](decisions/0011-image-tagging-strategy.md) for tagging strategy.
+- ~~**Image distribution mechanism**~~ → ECR (Phase 4). EC2 authenticates via instance role; no AWS keys on the box.
+- ~~**Image tagging strategy**~~ → `:latest` + `:<git-sha>` hybrid. `:latest` is the deploy target; SHA tags enable rollback by digest. See [ADR 0011](decisions/0011-image-tagging-strategy.md).
+- ~~**Deploy mechanism from CI**~~ → SSM Run Command. No SSH keys stored in GitHub Secrets; no inbound network changes needed; full CloudTrail audit. See [ADR 0012](decisions/0012-deploy-mechanism.md).
+- ~~**ECR storage growth**~~ → Lifecycle policy keeps 5 most recent tagged images, deletes untagged after 7 days.
+- ~~**Automated deploys**~~ → Push to `master` triggers full pipeline. Manual deploy path retained as break-glass.
 
 **Outstanding:**
 
-- **Reserved short codes** — generator does not exclude codes that collide with static routes (`shorten`, `docs`, `redoc`, `openapi.json`, `healthz`). Probability is vanishingly small (1 in 62^7), but the principle is unprotected. Phase 5 follow-up before automation amplifies the risk.
-- **Image tag rollback path** — Phase 4 uses `:latest` only, so rollback requires identifying a previous manifest digest in ECR and re-pulling by digest. Phase 5 introduces git-SHA-tagged builds for tag-level rollback.
+- **Reserved short codes** — generator does not exclude codes that collide with static routes (`shorten`, `docs`, `redoc`, `openapi.json`, `healthz`). Probability is vanishingly small (1 in 62^7), but the principle is unprotected. Phase 6 cleanup candidate.
 - **Alembic config coupling** — `alembic/env.py` calls `get_settings()`, which forces every required env var (including `BASE_URL`) into the migrate service's environment, even though migrate doesn't use them. Should be decoupled so migrate only reads `DATABASE_URL` directly from `os.environ`. Phase 6 cleanup candidate.
+- **Test database parity** — CI tests run against in-memory SQLite, not Postgres. Cheap and fast, but doesn't catch Postgres-specific behavior (concurrent transactions, timezone-aware columns, JSON operators). Acceptable for v1; revisit if Postgres-specific bugs start slipping through.
+- **No rollback automation** — a bad deploy currently requires manually re-pushing a previous SHA tag as `:latest` and re-triggering the pipeline. Workable but unscripted. Phase 12 polish candidate.
