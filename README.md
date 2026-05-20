@@ -12,7 +12,7 @@ Learning project to build depth in Python/FastAPI, Docker, AWS (EC2, ECR, IAM), 
 - **Database:** PostgreSQL
 - **Packaging:** Docker (multi-stage), docker-compose for local dev
 - **Infrastructure:** AWS EC2, ECR, IAM (instance role), VPC + Security Groups
-- **CI/CD:** GitHub Actions — lint, test, build, push, deploy on every push to `main`
+- **CI/CD:** GitHub Actions — lint, test, build, push, deploy on every push to `master`
 
 ## How it works
 
