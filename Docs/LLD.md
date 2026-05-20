@@ -525,7 +525,7 @@ The CI side of the auth flow. The conceptual map is in `HLD.md` §5.2 ("CI/CD pi
 **Setup (one-time, already done):**
 
 - An OIDC identity provider is registered in IAM at the URL `https://token.actions.githubusercontent.com` with audience `sts.amazonaws.com`. This tells AWS "trust tokens signed by GitHub's OIDC provider for this audience."
-- `fluxurl-github-actions-role` exists with a trust policy that allows the `sts:AssumeRoleWithWebIdentity` action *only* when the token's `sub` claim is `repo:saurabhgupta050890/fluxurl:ref:refs/heads/master`. (Replace with actual GitHub username/repo.) The branch scope is the security boundary — a workflow from any other branch, or from a fork, cannot assume this role.
+- `fluxurl-github-actions-role` exists with a trust policy that allows the `sts:AssumeRoleWithWebIdentity` action *only* when the token's `sub` claim is `repo:100rabhSG/fluxurl:ref:refs/heads/master`. The branch scope is the security boundary — a workflow from any other branch, or from a fork, cannot assume this role.
 
 **Runtime, every CI job that needs AWS:**
 
@@ -541,7 +541,7 @@ GitHub Actions runner
        ▼
 GitHub OIDC provider:
        │   Mints a JWT with claims:
-       │     sub: repo:<user>/fluxurl:ref:refs/heads/master
+       │     sub: repo:100rabhSG/fluxurl:ref:refs/heads/master
        │     aud: sts.amazonaws.com
        │     iss: https://token.actions.githubusercontent.com
        │     exp: 5 minutes from now
@@ -727,7 +727,7 @@ The runner authenticates to AWS via OIDC (same as `build-and-push`), then calls 
 
 **Layer 2: SSM routes the command to the instance via the agent's outbound connection.**
 
-The SSM agent on EC2 maintains an outbound HTTPS connection to AWS's SSM service. When the API receives a `SendCommand` with this instance as a target, the command is dispatched through that pre-existing channel. **No inbound network is involved on the EC2 side.** The agent on EC2 receives the command, executes it under the `ssm-user` account (typically with sudo capabilities for system commands; in this case the commands run docker, which works because ssm-user has docker group membership or runs commands that ultimately invoke the docker socket).
+The SSM agent on EC2 maintains an outbound HTTPS connection to AWS's SSM service. When the API receives a `SendCommand` with this instance as a target, the command is dispatched through that pre-existing channel. **No inbound network is involved on the EC2 side.** The agent on EC2 receives the command and executes it under `root` (the default for `AWS-RunShellScript` on Linux), so `docker` and other privileged commands work without needing extra group membership or `sudo`.
 
 Three things make this work:
 - The agent is running on EC2 (`systemctl status amazon-ssm-agent`).
