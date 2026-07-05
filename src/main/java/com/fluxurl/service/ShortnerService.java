@@ -14,7 +14,7 @@ public class ShortnerService {
 
     //Generate a random 7-char Base62 string
     public String generateShortCode(){
-        return generateShortCode(DEFAULT_LENGTH)
+        return generateShortCode(DEFAULT_LENGTH);
     }
 
     public String generateShortCode(int length){
