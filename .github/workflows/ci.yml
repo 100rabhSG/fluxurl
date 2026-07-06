@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Eclipse Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          # Caches Gradle dependencies so builds are fast in GitHub Actions runner
+          cache: 'gradle'
+
+      - name: Run JUnit Tests
+        run: ./gradlew test
+
+      - name: Build boot JAR
+        run: ./gradlew bootJar -x test
+
+  build-and-push:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::546201496354:role/fluxurl-github-actions-role
+          aws-region: ap-south-1
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        env:
+          ECR_REGISTRY: 546201496354.dkr.ecr.ap-south-1.amazonaws.com
+          # ECR Repository name
+          ECR_REPOSITORY: fluxurl
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::546201496354:role/fluxurl-github-actions-role
+          aws-region: ap-south-1
+
+      - name: Send deploy command via SSM
+        id: send
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids i-0ba70062d8f85852b \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy commit ${{ github.sha }}" \
+            --parameters 'commands=[
+              "set -e",
+              "cd /home/ubuntu",
+              "aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 546201496354.dkr.ecr.ap-south-1.amazonaws.com",
+              "docker compose -f docker-compose.prod.yml pull",
+              "docker compose -f docker-compose.prod.yml up -d --force-recreate"
+            ]' \
+            --query "Command.CommandId" \
+            --output text)
+          echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
+          echo "Sent command: $COMMAND_ID"
+
+      - name: Wait for deploy to complete
+        run: |
+          aws ssm wait command-executed \
+            --instance-id i-0ba70062d8f85852b \
+            --command-id ${{ steps.send.outputs.command_id }}
+
+      - name: Show command output
+        if: always()
+        run: |
+          aws ssm get-command-invocation \
+            --instance-id i-0ba70062d8f85852b \
+            --command-id ${{ steps.send.outputs.command_id }} \
+            --query "{Status:Status,StandardOutput:StandardOutputContent,StandardError:StandardErrorContent}" \
+            --output table

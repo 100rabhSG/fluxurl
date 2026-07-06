@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16
+    container_name: fluxurl-java-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fluxurl
+      POSTGRES_PASSWORD: fluxurl
+      POSTGRES_DB: fluxurl
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fluxurl -d fluxurl"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    image: 546201496354.dkr.ecr.ap-south-1.amazonaws.com/fluxurl:latest
+    container_name: fluxurl-java-app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/fluxurl
+      DATABASE_USER: fluxurl
+      DATABASE_PASSWORD: fluxurl
+      # Public base URL of your AWS EC2 instance
+      BASE_URL: http://3.109.34.168
+    ports:
+      # Map public host port 80 to Spring Boot container port 8081
+      - "80:8081"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
